@@ -499,11 +499,14 @@ class AccountService:
                 # 使用 _apply_refreshed_tokens 更新账号（处理 token 别名）
                 new_token = self._apply_refreshed_tokens(access_token, token_data, f"{event}:password_relogin")
 
-                # 额外更新 source_type 和 status（静默，避免重复日志）
-                self.update_account(new_token, {
-                    "source_type": result.get("source_type", "password"),
-                    "status": "正常",
-                }, quiet=True)
+                # 额外更新来源和状态；账号已有来源时保留原来源，避免 Codex 导入账号被重登流程改成 password。
+                refreshed_account = self.get_account(new_token) or {}
+                current_source_type = self._normalize_source_type(refreshed_account.get("source_type"))
+                source_type = str(result.get("source_type") or "").strip()
+                updates = {"status": "正常"}
+                if source_type and current_source_type != "codex":
+                    updates["source_type"] = source_type
+                self.update_account(new_token, updates, quiet=True)
 
                 log_service.add(
                     LOG_TYPE_ACCOUNT,
@@ -1246,7 +1249,12 @@ class AccountService:
             current = self._accounts.get(access_token)
             if current is None:
                 return None
-            account = self._normalize_account({**current, **updates, "access_token": access_token})
+            next_item = {**current, **updates, "access_token": access_token}
+            if not str((updates or {}).get("source_type") or "").strip():
+                next_item["source_type"] = current.get("source_type")
+            if not str((updates or {}).get("export_type") or "").strip() and current.get("export_type"):
+                next_item["export_type"] = current.get("export_type")
+            account = self._normalize_account(next_item)
             if account is None:
                 return None
             if account.get("status") == "限流" and config.auto_remove_rate_limited_accounts:
@@ -1396,8 +1404,14 @@ class AccountService:
                 ):
                     self.remove_invalid_token(active_token, event)
                 raise
+        current_account = self.get_account(active_token) or {}
+        merged_result = dict(result)
+        if not str(merged_result.get("source_type") or "").strip():
+            merged_result["source_type"] = current_account.get("source_type")
+        if not str(merged_result.get("export_type") or "").strip() and current_account.get("export_type"):
+            merged_result["export_type"] = current_account.get("export_type")
         self._record_refresh_success(active_token)
-        return self.update_account(active_token, result)
+        return self.update_account(active_token, merged_result)
 
     # ---- 刷新进度追踪 ----
 

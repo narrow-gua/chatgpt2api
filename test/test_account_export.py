@@ -113,6 +113,62 @@ class AccountExportTests(unittest.TestCase):
         self.assertEqual(account["refresh_token"], "rt_test")
         self.assertEqual(account["account_id"], "acct_123")
 
+    def test_update_account_preserves_codex_source_when_remote_info_omits_it(self) -> None:
+        service = AccountService(MemoryStorage())
+        service.add_account_items(
+            [
+                {
+                    "type": "codex",
+                    "access_token": "access_token_test",
+                    "refresh_token": "rt_test",
+                }
+            ]
+        )
+
+        account = service.update_account(
+            "access_token_test",
+            {
+                "type": "Plus",
+                "quota": 5,
+                "status": "正常",
+            },
+        )
+
+        self.assertIsNotNone(account)
+        self.assertEqual(account["type"], "Plus")
+        self.assertEqual(account["quota"], 5)
+        self.assertEqual(account["source_type"], "codex")
+        self.assertEqual(account["export_type"], "codex")
+
+    def test_refreshed_access_token_preserves_codex_source(self) -> None:
+        service = AccountService(MemoryStorage())
+        service.add_account_items(
+            [
+                {
+                    "type": "codex",
+                    "access_token": "old_access_token",
+                    "refresh_token": "old_refresh_token",
+                }
+            ]
+        )
+
+        new_token = service._apply_refreshed_tokens(
+            "old_access_token",
+            {
+                "access_token": "new_access_token",
+                "refresh_token": "new_refresh_token",
+                "id_token": "new_id_token",
+            },
+            "test",
+        )
+        account = service.get_account(new_token)
+
+        self.assertEqual(new_token, "new_access_token")
+        self.assertIsNotNone(account)
+        self.assertEqual(account["source_type"], "codex")
+        self.assertEqual(account["export_type"], "codex")
+        self.assertEqual(account["refresh_token"], "new_refresh_token")
+
 
 if __name__ == "__main__":
     unittest.main()
