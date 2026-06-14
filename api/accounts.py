@@ -121,7 +121,27 @@ class OAuthLoginFinishRequest(BaseModel):
 
 
 def _account_payload_token(item: dict[str, Any]) -> str:
-    return str(item.get("access_token") or item.get("accessToken") or "").strip()
+    return account_service._account_payload_token(item)
+
+
+def _is_codex_account_payload(item: dict[str, Any]) -> bool:
+    if not isinstance(item, dict):
+        return False
+    nested = item.get("tokens") if isinstance(item.get("tokens"), dict) else {}
+    source_type = str(item.get("source_type") or "").strip().lower()
+    export_type = str(item.get("export_type") or "").strip().lower()
+    account_type = str(item.get("type") or "").strip().lower()
+    auth_mode = str(item.get("auth_mode") or "").strip().lower()
+    has_nested_access_token = bool(
+        nested.get("access_token")
+        or nested.get("accessToken")
+    )
+    return (
+        source_type == "codex"
+        or export_type == "codex"
+        or account_type == "codex"
+        or (auth_mode == "chatgpt" and has_nested_access_token)
+    )
 
 
 def _unique_tokens(tokens: list[str]) -> list[str]:
@@ -230,7 +250,14 @@ def create_router() -> APIRouter:
                 result["skipped"] = int(result.get("skipped") or 0) + int(extra_result.get("skipped") or 0)
         else:
             result = account_service.add_accounts(tokens)
-        refresh_result = account_service.refresh_accounts(tokens)
+        codex_token_set = {
+            token
+            for item in account_payloads
+            if _is_codex_account_payload(item)
+            and (token := _account_payload_token(item))
+        }
+        refresh_tokens = [token for token in tokens if token not in codex_token_set]
+        refresh_result = account_service.refresh_accounts(refresh_tokens) if refresh_tokens else {"refreshed": 0, "errors": [], "items": result.get("items", [])}
         return {
             **result,
             "refreshed": refresh_result.get("refreshed", 0),
