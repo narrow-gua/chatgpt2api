@@ -15,6 +15,9 @@ from utils.image_tokens import token_usage
 
 
 CODEX_PUBLIC_MODEL = "codex"
+CODEX_DEFAULT_INSTRUCTIONS = (
+    "You are Codex, a helpful coding assistant. Answer the user's request directly and concisely."
+)
 
 
 def _as_text(value: object) -> str:
@@ -60,9 +63,8 @@ def _codex_payload(body: dict[str, Any], messages: list[dict[str, Any]]) -> dict
         "store": bool(body.get("store", False)),
         "input": _codex_input_from_messages(messages),
     }
-    instructions = str(body.get("instructions") or "").strip()
-    if instructions:
-        payload["instructions"] = instructions
+    instructions = str(body.get("instructions") or "").strip() or CODEX_DEFAULT_INSTRUCTIONS
+    payload["instructions"] = instructions
     for key in ("reasoning", "tools", "tool_choice", "parallel_tool_calls", "metadata"):
         if key in body:
             payload[key] = body[key]
@@ -147,8 +149,9 @@ def _codex_events(payload: dict[str, Any]) -> Iterator[dict[str, Any]]:
                         last_error = retry_exc
                         status_code = getattr(retry_exc, "status_code", None)
                         token = refreshed_token
-            status = "限流" if status_code == 429 else "异常"
-            account_service.update_account(token, {"status": status}, quiet=True)
+            if status_code in {401, 403, 429}:
+                status = "限流" if status_code == 429 else "异常"
+                account_service.update_account(token, {"status": status}, quiet=True)
             if status_code not in {401, 403, 429}:
                 raise
     if last_error:
