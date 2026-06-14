@@ -535,10 +535,22 @@ class OpenAIBackendAPI:
         return self._headers(path, headers)
 
     def _codex_responses_headers(self) -> Dict[str, str]:
-        return {
+        headers = {
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json",
         }
+        account = account_service.get_account(self.access_token) or {}
+        token_payload = account_service._decode_jwt_payload(self.access_token)
+        auth_claim = token_payload.get("https://api.openai.com/auth")
+        auth_claim = auth_claim if isinstance(auth_claim, dict) else {}
+        account_id = str(
+            account.get("account_id")
+            or auth_claim.get("chatgpt_account_id")
+            or ""
+        ).strip()
+        if account_id:
+            headers["ChatGPT-Account-ID"] = account_id
+        return headers
 
     def _ensure_codex_source_account(self) -> None:
         account = account_service.get_account(self.access_token)

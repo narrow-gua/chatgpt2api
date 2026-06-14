@@ -33,6 +33,7 @@ class AccountService:
     _TOKEN_REFRESH_ERROR_BACKOFF_SECONDS = 5 * 60
     _OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
     _OAUTH_CLIENT_ID = "app_2SKx67EdpoN0G6j64rFvigXD"
+    _CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
     _OAUTH_USER_AGENT = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -360,11 +361,21 @@ class AccountService:
         due_at = anchor + timedelta(seconds=self._REFRESH_TOKEN_KEEPALIVE_SECONDS)
         return due_at if due_at <= now else None
 
+    @classmethod
+    def _oauth_client_id_for_account(cls, account: dict | None = None) -> str:
+        if isinstance(account, dict):
+            source_type = cls._normalize_source_type(account.get("source_type"))
+            export_type = str(account.get("export_type") or "").strip().lower()
+            if source_type == "codex" or export_type == "codex":
+                return cls._CODEX_OAUTH_CLIENT_ID
+        return cls._OAUTH_CLIENT_ID
+
     def _request_access_token_refresh(self, refresh_token: str, account: dict | None = None) -> dict[str, str]:
         from curl_cffi import requests
         from services.proxy_service import proxy_settings
 
         session = requests.Session(**proxy_settings.build_session_kwargs(account=account, impersonate="chrome110", verify=True))
+        client_id = self._oauth_client_id_for_account(account)
         try:
             response = session.post(
                 self._OAUTH_TOKEN_URL,
@@ -376,7 +387,7 @@ class AccountService:
                 data={
                     "grant_type": "refresh_token",
                     "refresh_token": refresh_token,
-                    "client_id": self._OAUTH_CLIENT_ID,
+                    "client_id": client_id,
                 },
                 timeout=60,
             )

@@ -4,6 +4,7 @@ import unittest
 from typing import Any
 
 from services.account_service import AccountService
+from services.openai_backend_api import OpenAIBackendAPI
 
 
 class MemoryStorage:
@@ -168,6 +169,52 @@ class AccountExportTests(unittest.TestCase):
         self.assertEqual(account["source_type"], "codex")
         self.assertEqual(account["export_type"], "codex")
         self.assertEqual(account["refresh_token"], "new_refresh_token")
+
+    def test_codex_accounts_use_codex_oauth_client_id_for_refresh(self) -> None:
+        service = AccountService(MemoryStorage())
+
+        self.assertEqual(
+            service._oauth_client_id_for_account({"source_type": "codex"}),
+            service._CODEX_OAUTH_CLIENT_ID,
+        )
+        self.assertEqual(
+            service._oauth_client_id_for_account({"export_type": "codex"}),
+            service._CODEX_OAUTH_CLIENT_ID,
+        )
+        self.assertEqual(
+            service._oauth_client_id_for_account({"source_type": "web"}),
+            service._OAUTH_CLIENT_ID,
+        )
+
+    def test_codex_response_headers_include_account_id(self) -> None:
+        access_token = make_jwt(
+            {
+                "https://api.openai.com/auth": {
+                    "chatgpt_account_id": "acct_from_claim",
+                }
+            }
+        )
+        service = AccountService(
+            MemoryStorage(
+                [
+                    {
+                        "type": "codex",
+                        "access_token": access_token,
+                        "account_id": "acct_from_record",
+                    }
+                ]
+            )
+        )
+        import services.openai_backend_api as backend_module
+
+        original_service = backend_module.account_service
+        backend_module.account_service = service
+        try:
+            headers = OpenAIBackendAPI(access_token)._codex_responses_headers()
+        finally:
+            backend_module.account_service = original_service
+
+        self.assertEqual(headers["ChatGPT-Account-ID"], "acct_from_record")
 
 
 if __name__ == "__main__":
