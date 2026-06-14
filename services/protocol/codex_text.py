@@ -129,10 +129,27 @@ def _codex_events(payload: dict[str, Any]) -> Iterator[dict[str, Any]]:
             return
         except Exception as exc:
             last_error = exc
-            account = account_service.get_account(token) or {}
-            status = "限流" if getattr(exc, "status_code", None) == 429 else "异常"
+            status_code = getattr(exc, "status_code", None)
+            if status_code in {401, 403}:
+                refreshed_token = account_service.refresh_access_token(
+                    token,
+                    force=True,
+                    event="codex_response_auth_retry",
+                )
+                if refreshed_token and refreshed_token != token and refreshed_token not in attempted:
+                    attempted.add(refreshed_token)
+                    try:
+                        backend = OpenAIBackendAPI(access_token=refreshed_token)
+                        yield from backend.iter_codex_response_events(payload)
+                        account_service.mark_text_used(refreshed_token)
+                        return
+                    except Exception as retry_exc:
+                        last_error = retry_exc
+                        status_code = getattr(retry_exc, "status_code", None)
+                        token = refreshed_token
+            status = "限流" if status_code == 429 else "异常"
             account_service.update_account(token, {"status": status}, quiet=True)
-            if getattr(exc, "status_code", None) not in {401, 403, 429}:
+            if status_code not in {401, 403, 429}:
                 raise
     if last_error:
         raise last_error

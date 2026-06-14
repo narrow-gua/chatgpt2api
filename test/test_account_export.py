@@ -242,6 +242,8 @@ class AccountExportTests(unittest.TestCase):
             backend_module.account_service = original_service
 
         self.assertEqual(headers["ChatGPT-Account-ID"], "acct_from_record")
+        self.assertEqual(headers["Originator"], "codex_cli_rs")
+        self.assertEqual(headers["OpenAI-Beta"], "responses=experimental")
 
 
 if __name__ == "__main__":

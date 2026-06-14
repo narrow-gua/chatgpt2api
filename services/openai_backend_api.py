@@ -537,7 +537,11 @@ class OpenAIBackendAPI:
     def _codex_responses_headers(self) -> Dict[str, str]:
         headers = {
             "Authorization": f"Bearer {self.access_token}",
+            "Accept": "text/event-stream",
             "Content-Type": "application/json",
+            "OpenAI-Beta": "responses=experimental",
+            "Originator": "codex_cli_rs",
+            "User-Agent": "codex_cli_rs/0.139.0",
         }
         account = account_service.get_account(self.access_token) or {}
         token_payload = account_service._decode_jwt_payload(self.access_token)
