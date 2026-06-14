@@ -1016,6 +1016,31 @@ class AccountService:
             self._index += 1
         return self.refresh_access_token(access_token, event="get_text_access_token") or access_token
 
+    def get_codex_access_token(self, excluded_tokens: set[str] | None = None) -> str:
+        excluded = set(excluded_tokens or set())
+        with self._lock:
+            candidates = [
+                token
+                for account in self._accounts.values()
+                if account.get("status") not in {"禁用", "异常"}
+                   and self._normalize_source_type(account.get("source_type")) == "codex"
+                   and (token := account.get("access_token") or "")
+                   and token not in excluded
+            ]
+            if not candidates:
+                return ""
+            access_token = candidates[self._index % len(candidates)]
+            self._index += 1
+        return self.refresh_access_token(access_token, event="get_codex_access_token") or access_token
+
+    def list_codex_accounts(self) -> list[dict]:
+        with self._lock:
+            return [
+                dict(item)
+                for item in self._accounts.values()
+                if self._normalize_source_type(item.get("source_type")) == "codex"
+            ]
+
     def mark_text_used(self, access_token: str) -> None:
         if not access_token:
             return

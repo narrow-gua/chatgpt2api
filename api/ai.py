@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.image_inputs import parse_image_edit_request, read_image_sources
-from api.support import require_identity, resolve_image_base_url
+from api.support import require_admin, require_identity, resolve_image_base_url
 from services.content_filter import check_request, request_shape, request_text
 from services.editable_file_task_service import editable_file_task_service
 from services.log_service import LoggedCall
@@ -18,6 +18,7 @@ from services.protocol import (
     openai_v1_models,
     openai_v1_response,
     openai_search,
+    codex_text,
 )
 
 
@@ -173,6 +174,45 @@ def create_router() -> APIRouter:
         call = LoggedCall(identity, "/v1/search", openai_search.MODEL, "搜索", request_text=body.prompt)
         await filter_or_log(call, body.prompt)
         return await call.run(openai_search.handle, body.model_dump(mode="python"))
+
+    @router.post("/codex/responses")
+    async def create_codex_response(body: ResponseCreateRequest, authorization: str | None = Header(default=None)):
+        identity = require_identity(authorization)
+        payload = body.model_dump(mode="python")
+        model = str(payload.get("model") or "codex")
+        request_preview = request_text(payload.get("input"), payload.get("instructions"))
+        call = LoggedCall(
+            identity,
+            "/codex/responses",
+            model,
+            "Codex Responses",
+            request_text=request_preview,
+            request_shape=request_shape(payload.get("input")),
+        )
+        await filter_or_log(call, request_preview)
+        return await call.run(codex_text.handle_response, payload)
+
+    @router.post("/codex/chat/completions")
+    async def create_codex_chat_completion(body: ChatCompletionRequest, authorization: str | None = Header(default=None)):
+        identity = require_identity(authorization)
+        payload = body.model_dump(mode="python")
+        model = str(payload.get("model") or "codex")
+        request_preview = request_text(payload.get("prompt"), payload.get("messages"))
+        call = LoggedCall(
+            identity,
+            "/codex/chat/completions",
+            model,
+            "Codex Chat",
+            request_text=request_preview,
+            request_shape=request_shape(payload.get("messages")),
+        )
+        await filter_or_log(call, request_preview)
+        return await call.run(codex_text.handle_chat_completion, payload)
+
+    @router.get("/codex/accounts")
+    async def get_codex_accounts(authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        return await run_in_threadpool(codex_text.list_codex_accounts)
 
     @router.get("/v1/editable-file-tasks")
     async def list_editable_file_tasks(ids: str = "", authorization: str | None = Header(default=None)):

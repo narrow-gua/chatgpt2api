@@ -200,7 +200,7 @@ function AccountsPageContent() {
   const [editProxy, setEditProxy] = useState("");
   const [isTestingProxy, setIsTestingProxy] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
-  const [isLoadingModels, setIsLoadingModels] = useState(true);
+  const [isLoadingModels, setIsLoadingModels] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshingTokens, setRefreshingTokens] = useState<Set<string>>(new Set());
   const [isDeleting, setIsDeleting] = useState(false);
@@ -245,6 +245,7 @@ function AccountsPageContent() {
     try {
       const data = await fetchModels();
       setAvailableModels(Array.isArray(data.data) ? data.data : []);
+      toast.success("模型列表已刷新");
     } catch (error) {
       const message = error instanceof Error ? error.message : "加载模型列表失败";
       toast.error(message);
@@ -259,7 +260,6 @@ function AccountsPageContent() {
     }
     didLoadRef.current = true;
     void loadAccounts();
-    void loadModels();
 
     // 清理进度条定时器
     return () => {
@@ -900,8 +900,22 @@ function AccountsPageContent() {
         <Card className="rounded-2xl border-white/80 bg-white/90 shadow-sm">
           <CardContent className="p-4">
             <div className="mb-3 text-sm font-medium text-stone-700">
-              系统可用模型
-              <span className="ml-1 text-stone-400">({availableModels.length})</span>
+              <div className="flex items-center justify-between gap-3">
+                <span>
+                  系统可用模型
+                  <span className="ml-1 text-stone-400">({availableModels.length})</span>
+                </span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-8 rounded-lg border-stone-200 bg-white px-3 text-xs text-stone-600"
+                  onClick={() => void loadModels()}
+                  disabled={isLoadingModels}
+                >
+                  <RefreshCw className={cn("size-3.5", isLoadingModels ? "animate-spin" : "")} />
+                  刷新模型
+                </Button>
+              </div>
             </div>
             <div className="flex flex-wrap gap-2">
               {availableModels.length > 0 ? (
@@ -928,7 +942,7 @@ function AccountsPageContent() {
               ) : isLoadingModels ? (
                 <span className="text-sm text-stone-400">正在加载模型列表...</span>
               ) : (
-                <span className="text-sm text-stone-400">当前暂无可用模型</span>
+                <span className="text-sm text-stone-400">模型列表未加载，点击右侧按钮刷新。</span>
               )}
             </div>
           </CardContent>
@@ -1082,7 +1096,6 @@ function AccountsPageContent() {
                     <th className="w-32 px-4 py-3">创建时间</th>
                     <th className="w-24 px-4 py-3">额度</th>
                     <th className="w-40 px-4 py-3">恢复时间</th>
-                    <th className="w-18 px-4 py-3">在途</th>
                     <th className="w-18 px-4 py-3">成功</th>
                     <th className="w-18 px-4 py-3">失败</th>
                     <th className="w-24 px-4 py-3">操作</th>
@@ -1173,27 +1186,6 @@ function AccountsPageContent() {
                                 {restore.relative ? <div className="font-medium text-stone-700">{restore.relative}</div> : null}
                                 <div>{restore.absolute}</div>
                               </div>
-                            );
-                          })()}
-                        </td>
-                        <td className="px-4 py-3">
-                          {(() => {
-                            const inflight = account.image_inflight ?? 0;
-                            return (
-                              <span
-                                className={
-                                  inflight > 0
-                                    ? "font-semibold text-amber-600"
-                                    : "text-stone-400"
-                                }
-                                title={
-                                  inflight > 0
-                                    ? "当前正在生成的图片数。号池空闲时此值持续 > 0，说明并发槽位泄漏、该账号已被静默排除出调度"
-                                    : "当前无在途生图任务"
-                                }
-                              >
-                                {inflight}
-                              </span>
                             );
                           })()}
                         </td>

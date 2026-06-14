@@ -802,6 +802,58 @@ class OpenAIBackendAPI:
             retry_after = int(retry_after_header) if str(retry_after_header or "").isdigit() else None
             raise UpstreamHTTPError(path, error.code, body, retry_after=retry_after) from error
 
+    def iter_codex_response_events(
+            self,
+            payload: Dict[str, Any],
+    ) -> Iterator[Dict[str, Any]]:
+        if not self.access_token:
+            raise RuntimeError("access_token is required for codex endpoints")
+        self._ensure_codex_source_account()
+        path = "/backend-api/codex/responses"
+        body = dict(payload)
+        body["stream"] = True
+        request = urllib.request.Request(
+            self.base_url + path,
+            json.dumps(body).encode(),
+            self._codex_responses_headers(),
+            method="POST",
+        )
+        account = account_service.get_account(self.access_token) or {}
+        logger.info({
+            "event": "codex_text_request_debug",
+            "url": self.base_url + path,
+            "transport": "urllib.request",
+            "timeout_secs": 1200,
+            "account_email": str(account.get("email") or "").strip(),
+            "source_type": str(account.get("source_type") or "").strip(),
+            "account_type": str(account.get("type") or "").strip(),
+            "request": {
+                "model": body.get("model"),
+                "stream": body.get("stream"),
+                "store": body.get("store"),
+                "input_preview": self._codex_body_preview(body.get("input"), 1000),
+                "tools": body.get("tools"),
+            },
+            "headers": {
+                key: value for key, value in self._codex_responses_headers().items()
+                if key.lower() != "authorization"
+            },
+        })
+        try:
+            with urllib.request.urlopen(request, timeout=1200) as raw:
+                yield from self._iter_codex_response_events(raw)
+        except urllib.error.HTTPError as error:
+            body_text = error.read().decode("utf-8", "replace")
+            error_body: Any = body_text
+            try:
+                error_body = json.loads(body_text)
+            except Exception:
+                pass
+            self._log_codex_response_failure(path, error.code, error.headers, body, error_body)
+            retry_after_header = error.headers.get("Retry-After") if error.headers else None
+            retry_after = int(retry_after_header) if str(retry_after_header or "").isdigit() else None
+            raise UpstreamHTTPError(path, error.code, error_body, retry_after=retry_after) from error
+
     def _prepare_image_conversation(self, prompt: str, requirements: ChatRequirements, model: str) -> str:
         """为图片生成准备 conduit token。"""
         path = "/backend-api/f/conversation/prepare"
