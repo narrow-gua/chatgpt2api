@@ -114,6 +114,33 @@ class AccountExportTests(unittest.TestCase):
         self.assertEqual(account["refresh_token"], "rt_test")
         self.assertEqual(account["account_id"], "acct_123")
 
+    def test_add_account_items_detects_raw_codex_cli_auth_json(self) -> None:
+        service = AccountService(MemoryStorage())
+
+        result = service.add_account_items(
+            [
+                {
+                    "auth_mode": "chatgpt",
+                    "OPENAI_API_KEY": None,
+                    "tokens": {
+                        "access_token": "access_token_test",
+                        "refresh_token": "rt_test",
+                        "id_token": "id_test",
+                        "account_id": "acct_123",
+                    },
+                }
+            ]
+        )
+
+        account = service.get_account("access_token_test")
+        self.assertEqual(result["added"], 1)
+        self.assertIsNotNone(account)
+        self.assertEqual(account["source_type"], "codex")
+        self.assertEqual(account["export_type"], "codex")
+        self.assertEqual(account["refresh_token"], "rt_test")
+        self.assertEqual(account["id_token"], "id_test")
+        self.assertEqual(account["account_id"], "acct_123")
+
     def test_update_account_preserves_codex_source_when_remote_info_omits_it(self) -> None:
         service = AccountService(MemoryStorage())
         service.add_account_items(

@@ -1155,8 +1155,15 @@ class AccountService:
         payload.pop("accessToken", None)
         payload.pop("tokens", None)
         payload["access_token"] = access_token
+        source_type = str(payload.get("source_type") or "").strip().lower()
+        auth_mode = str(payload.get("auth_mode") or "").strip().lower()
+        has_nested_tokens = isinstance(nested, dict) and bool(access_token)
         # CPA/Codex 导出文件里的 `type=codex` 是导出格式，不是号池套餐类型。
-        if str(payload.get("type") or "").strip().lower() == "codex":
+        if str(payload.get("type") or "").strip().lower() == "codex" or (
+            source_type in {"", "oauth_login"}
+            and auth_mode == "chatgpt"
+            and has_nested_tokens
+        ):
             payload["export_type"] = "codex"
             payload["source_type"] = "codex"
             payload.pop("type", None)
