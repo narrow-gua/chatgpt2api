@@ -208,11 +208,16 @@ class AccountService:
     def _normalize_account(self, item: dict) -> dict | None:
         if not isinstance(item, dict):
             return None
-        access_token = item.get("access_token") or item.get("accessToken") or ""
+        nested = item.get("tokens") if isinstance(item.get("tokens"), dict) else {}
+        access_token = item.get("access_token") or item.get("accessToken") or nested.get("access_token") or nested.get("accessToken") or ""
         if not access_token:
             return None
         normalized = dict(item)
+        for key in ("refresh_token", "id_token", "account_id"):
+            if not normalized.get(key) and nested.get(key):
+                normalized[key] = nested.get(key)
         normalized.pop("accessToken", None)
+        normalized.pop("tokens", None)
         normalized["access_token"] = access_token
         if str(normalized.get("type") or "").strip().lower() == "codex":
             normalized["export_type"] = "codex"
@@ -1112,7 +1117,14 @@ class AccountService:
 
     @staticmethod
     def _account_payload_token(item: dict) -> str:
-        return str(item.get("access_token") or item.get("accessToken") or "").strip()
+        nested = item.get("tokens") if isinstance(item.get("tokens"), dict) else {}
+        return str(
+            item.get("access_token")
+            or item.get("accessToken")
+            or nested.get("access_token")
+            or nested.get("accessToken")
+            or ""
+        ).strip()
 
     @staticmethod
     def _prepare_account_payload(item: dict) -> dict | None:
@@ -1122,7 +1134,12 @@ class AccountService:
         if not access_token:
             return None
         payload = dict(item)
+        nested = payload.get("tokens") if isinstance(payload.get("tokens"), dict) else {}
+        for key in ("refresh_token", "id_token", "account_id"):
+            if not payload.get(key) and nested.get(key):
+                payload[key] = nested.get(key)
         payload.pop("accessToken", None)
+        payload.pop("tokens", None)
         payload["access_token"] = access_token
         # CPA/Codex 导出文件里的 `type=codex` 是导出格式，不是号池套餐类型。
         if str(payload.get("type") or "").strip().lower() == "codex":

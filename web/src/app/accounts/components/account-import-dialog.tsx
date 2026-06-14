@@ -66,6 +66,30 @@ function getSessionAccessToken(value: unknown) {
   return typeof token === "string" ? token.trim() : "";
 }
 
+function getStringField(value: unknown, key: string) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return "";
+  }
+  const item = (value as Record<string, unknown>)[key];
+  return typeof item === "string" ? item.trim() : "";
+}
+
+function getCodexTokenPayload(raw: Record<string, unknown>) {
+  const nested = raw.tokens && typeof raw.tokens === "object" && !Array.isArray(raw.tokens)
+    ? raw.tokens as Record<string, unknown>
+    : {};
+  const accessToken = getStringField(raw, "access_token") || getStringField(raw, "accessToken") || getStringField(nested, "access_token") || getStringField(nested, "accessToken");
+  if (!accessToken) {
+    return null;
+  }
+  return {
+    access_token: accessToken,
+    refresh_token: getStringField(raw, "refresh_token") || getStringField(nested, "refresh_token"),
+    id_token: getStringField(raw, "id_token") || getStringField(nested, "id_token"),
+    account_id: getStringField(raw, "account_id") || getStringField(nested, "account_id"),
+  };
+}
+
 function getCpaAccount(value: unknown): AccountImportPayload | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -95,19 +119,28 @@ function getCodexAuthAccount(value: unknown): AccountImportPayload | null {
     return null;
   }
   const raw = value as Record<string, unknown>;
-  const tokenValue = raw.access_token ?? raw.accessToken;
-  const token = typeof tokenValue === "string" ? tokenValue.trim() : "";
-  if (!token) {
+  const tokens = getCodexTokenPayload(raw);
+  if (!tokens) {
     return null;
   }
 
   const payload: AccountImportPayload = {
     ...raw,
-    access_token: token,
+    ...tokens,
     export_type: "codex",
     source_type: "codex",
   };
+  if (!payload.refresh_token) {
+    delete payload.refresh_token;
+  }
+  if (!payload.id_token) {
+    delete payload.id_token;
+  }
+  if (!payload.account_id) {
+    delete payload.account_id;
+  }
   delete payload.accessToken;
+  delete payload.tokens;
   if (payload.type === "codex") {
     delete payload.type;
   }

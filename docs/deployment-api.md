@@ -241,6 +241,29 @@ curl http://45.147.167.43:3000/codex/chat/completions \
 
 ### Codex 账号池状态
 
+Codex CLI 的 `~/.codex/auth.json` 可以直接在账号池页面的“导入 Codex 认证 JSON”里粘贴。支持两种结构：
+
+```json
+{
+  "access_token": "...",
+  "refresh_token": "...",
+  "id_token": "..."
+}
+```
+
+也支持 Codex CLI 原始结构：
+
+```json
+{
+  "auth_mode": "chatgpt",
+  "tokens": {
+    "access_token": "...",
+    "refresh_token": "...",
+    "id_token": "..."
+  }
+}
+```
+
 ```bash
 curl http://45.147.167.43:3000/codex/accounts \
   -H "Authorization: Bearer <AUTH_KEY>"
