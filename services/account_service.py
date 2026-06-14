@@ -1166,6 +1166,13 @@ class AccountService:
         ):
             payload["export_type"] = "codex"
             payload["source_type"] = "codex"
+            payload["status"] = "正常"
+            payload["invalid_count"] = 0
+            payload["last_invalid_at"] = None
+            payload["last_refresh_error"] = None
+            payload["last_refresh_error_at"] = None
+            payload["last_token_refresh_error"] = None
+            payload["last_token_refresh_error_at"] = None
             payload.pop("type", None)
         if str(payload.get("export_type") or "").strip().lower() == "codex":
             payload["source_type"] = "codex"

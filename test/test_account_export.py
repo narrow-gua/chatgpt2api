@@ -141,6 +141,39 @@ class AccountExportTests(unittest.TestCase):
         self.assertEqual(account["id_token"], "id_test")
         self.assertEqual(account["account_id"], "acct_123")
 
+    def test_reimport_raw_codex_cli_auth_json_restores_status(self) -> None:
+        service = AccountService(
+            MemoryStorage(
+                [
+                    {
+                        "access_token": "access_token_test",
+                        "source_type": "codex",
+                        "export_type": "codex",
+                        "status": "异常",
+                        "invalid_count": 2,
+                    }
+                ]
+            )
+        )
+
+        result = service.add_account_items(
+            [
+                {
+                    "auth_mode": "chatgpt",
+                    "tokens": {
+                        "access_token": "access_token_test",
+                        "refresh_token": "rt_test",
+                    },
+                }
+            ]
+        )
+        account = service.get_account("access_token_test")
+
+        self.assertEqual(result["skipped"], 1)
+        self.assertIsNotNone(account)
+        self.assertEqual(account["status"], "正常")
+        self.assertEqual(account["invalid_count"], 0)
+
     def test_update_account_preserves_codex_source_when_remote_info_omits_it(self) -> None:
         service = AccountService(MemoryStorage())
         service.add_account_items(
