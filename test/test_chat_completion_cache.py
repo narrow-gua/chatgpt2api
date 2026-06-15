@@ -7,7 +7,7 @@ import base64
 
 from services.config import config
 from services.openai_backend_api import OpenAIBackendAPI
-from services.protocol import openai_v1_chat_complete, openai_v1_response
+from services.protocol import anthropic_v1_messages, openai_v1_chat_complete, openai_v1_response
 from services.protocol.chat_completion_cache import chat_completion_cache
 from services.protocol.conversation import iter_conversation_payloads, sanitize_output_text
 from utils.helper import extract_image_from_message_content
@@ -181,6 +181,14 @@ class ChatCompletionCacheTests(unittest.TestCase):
             })
 
         self.assertEqual(requests[0].thinking_effort, "extended")
+
+    def test_anthropic_messages_defaults_thinking_model_to_extended_effort(self) -> None:
+        request = anthropic_v1_messages.message_request({
+            "model": "gpt-5-5-thinking",
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+
+        self.assertEqual(request.thinking_effort, "extended")
 
     def test_conversation_payload_maps_high_reasoning_to_thinking_mode(self) -> None:
         payload = OpenAIBackendAPI()._conversation_payload(

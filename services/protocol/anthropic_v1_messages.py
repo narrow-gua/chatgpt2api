@@ -12,7 +12,7 @@ from typing import Any
 from services.account_service import account_service
 from services.openai_backend_api import OpenAIBackendAPI
 from services.protocol.conversation import count_message_tokens, count_text_tokens, normalize_messages
-from services.protocol.openai_v1_chat_complete import collect_chat_content, stream_text_chat_completion
+from services.protocol.openai_v1_chat_complete import collect_chat_content, request_thinking_effort, stream_text_chat_completion
 
 XML_TOOL_RULE = """Tool output adapter: when calling tools, output ONLY this XML and no prose/markdown:
 <tool_calls><tool_call><tool_name>TOOL_NAME</tool_name><parameters><PARAM><![CDATA[value]]></PARAM></parameters></tool_call></tool_calls>"""
@@ -23,6 +23,7 @@ class MessageRequest:
     backend: OpenAIBackendAPI
     messages: list[dict[str, Any]]
     model: str
+    thinking_effort: str = ""
     tools: Any = None
 
 
@@ -109,10 +110,12 @@ def preprocess_payload(payload: dict[str, object], text_mapper: Callable[[str], 
 
 def message_request(body: dict[str, Any]) -> MessageRequest:
     payload = preprocess_payload(dict(body))
+    model = str(payload.get("model") or "auto").strip() or "auto"
     return MessageRequest(
         backend=OpenAIBackendAPI(access_token=account_service.get_text_access_token()),
         messages=normalize_messages(payload.get("messages"), payload.get("system")),
-        model=str(payload.get("model") or "auto").strip() or "auto",
+        model=model,
+        thinking_effort=request_thinking_effort(payload, model),
         tools=payload.get("tools"),
     )
 
@@ -290,13 +293,13 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
     request = message_request(body)
     if body.get("stream"):
         return stream_events(
-            stream_text_chat_completion(request.backend, request.messages, request.model),
+            stream_text_chat_completion(request.backend, request.messages, request.model, request.thinking_effort),
             request.model,
             count_message_tokens(request.messages, request.model),
             lambda text: count_text_tokens(text, request.model),
             request.tools,
         )
-    text = collect_chat_content(stream_text_chat_completion(request.backend, request.messages, request.model))
+    text = collect_chat_content(stream_text_chat_completion(request.backend, request.messages, request.model, request.thinking_effort))
     return message_response(
         request.model,
         text,
