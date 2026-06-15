@@ -2168,8 +2168,15 @@ class OpenAIBackendAPI:
         deadline = time.time() + THINKING_TEXT_TIMEOUT_SECS
         last_text = ""
         last_model = ""
+        last_error = ""
         while time.time() < deadline:
-            text, actual_model = self._extract_thinking_text_result(self._get_search_conversation(conversation_id), model)
+            try:
+                conversation = self._get_search_conversation(conversation_id)
+            except Exception as exc:
+                last_error = str(exc)
+                time.sleep(THINKING_TEXT_POLL_INTERVAL_SECS)
+                continue
+            text, actual_model = self._extract_thinking_text_result(conversation, model)
             last_text = text or last_text
             last_model = actual_model or last_model
             if text:
@@ -2177,6 +2184,8 @@ class OpenAIBackendAPI:
             time.sleep(THINKING_TEXT_POLL_INTERVAL_SECS)
         if last_text:
             return last_text, last_model
+        if last_error:
+            raise RuntimeError(f"timed out waiting for thinking text result: {conversation_id}; last_error={last_error}")
         raise RuntimeError(f"timed out waiting for thinking text result: {conversation_id}")
 
     def _stream_thinking_text_conversation(

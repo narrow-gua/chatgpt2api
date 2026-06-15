@@ -215,6 +215,39 @@ class ChatCompletionCacheTests(unittest.TestCase):
         backend._stream_thinking_text_conversation.assert_called_once()
         backend._bootstrap.assert_not_called()
 
+    def test_wait_thinking_text_result_retries_temporary_detail_errors(self) -> None:
+        backend = OpenAIBackendAPI("token")
+        calls = 0
+
+        def fake_get_conversation(_conversation_id):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("temporary 404")
+            return {
+                "mapping": {
+                    "assistant": {
+                        "message": {
+                            "create_time": 2,
+                            "author": {"role": "assistant"},
+                            "metadata": {
+                                "model_slug": "gpt-5-5-thinking",
+                                "resolved_model_slug": "gpt-5-5-thinking",
+                            },
+                            "content": {"parts": ["ok"]},
+                        }
+                    }
+                }
+            }
+
+        backend._get_search_conversation = fake_get_conversation
+        with mock.patch("services.openai_backend_api.time.sleep", return_value=None):
+            text, model = backend._wait_thinking_text_result("conv-1", "gpt-5-5-thinking")
+
+        self.assertEqual(text, "ok")
+        self.assertEqual(model, "gpt-5-5-thinking")
+        self.assertEqual(calls, 2)
+
     def test_responses_completed_usage_includes_cached_tokens(self) -> None:
         with (
             mock.patch("services.protocol.openai_v1_response.text_backend", return_value=object()),
