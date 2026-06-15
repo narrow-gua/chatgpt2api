@@ -8,6 +8,7 @@ import time
 
 import urllib.error
 import urllib.request
+import websocket
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from io import BytesIO
@@ -563,6 +564,112 @@ class OpenAIBackendAPI:
         if accept == "text/event-stream":
             headers["X-Oai-Turn-Trace-Id"] = new_uuid()
         return self._headers(path, headers)
+
+    @staticmethod
+    def _extract_handoff_state(payload: str) -> tuple[str, str]:
+        try:
+            event = json.loads(payload)
+        except Exception:
+            return "", ""
+        if not isinstance(event, dict):
+            return "", ""
+        resume_token = ""
+        topic_id = ""
+        if event.get("type") == "resume_conversation_token":
+            resume_token = str(event.get("token") or "").strip()
+        if event.get("type") == "stream_handoff":
+            for option in event.get("options") or []:
+                if isinstance(option, dict) and option.get("type") == "subscribe_ws_topic":
+                    topic_id = str(option.get("topic_id") or "").strip()
+                    break
+        return resume_token, topic_id
+
+    @staticmethod
+    def _ws_payloads_from_message(message: object) -> list[str]:
+        text = message.decode("utf-8", errors="ignore") if isinstance(message, bytes) else str(message or "")
+        text = text.strip()
+        if not text:
+            return []
+        try:
+            event = json.loads(text)
+        except Exception:
+            return [text]
+        candidates: list[object] = []
+        if isinstance(event, dict):
+            for key in ("payload", "data", "message", "event"):
+                value = event.get(key)
+                if value is not None:
+                    candidates.append(value)
+            if not candidates and event.get("type") not in {"ack", "connected", "subscribed", "ping", "pong"}:
+                candidates.append(event)
+        else:
+            candidates.append(event)
+        payloads: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            if isinstance(candidate, str):
+                values = [candidate]
+            elif isinstance(candidate, list):
+                values = [json.dumps(item, ensure_ascii=False) for item in candidate]
+            else:
+                values = [json.dumps(candidate, ensure_ascii=False)]
+            for value in values:
+                cleaned = str(value or "").strip()
+                if not cleaned or cleaned in seen:
+                    continue
+                seen.add(cleaned)
+                payloads.append(cleaned)
+        return payloads
+
+    def _stream_handoff_topic(self, resume_token: str, topic_id: str, timeout: float = 300.0) -> Iterator[str]:
+        if not resume_token or not topic_id:
+            return
+        account = account_service.get_account(self.access_token) or {}
+        user_id = str(account.get("user_id") or "").strip()
+        urls = []
+        if user_id:
+            urls.append(f"wss://ws.chatgpt.com/p4/ws/user/{user_id}?verify={resume_token}")
+        urls.append(f"wss://ws.chatgpt.com/p4/ws?verify={resume_token}")
+        headers = [
+            f"User-Agent: {self.user_agent}",
+            "Origin: https://chatgpt.com",
+        ]
+        deadline = time.time() + timeout
+        last_error: BaseException | None = None
+        commands = [
+            {"type": "subscribe", "topic_id": topic_id},
+            {"type": "subscribe", "topic": topic_id},
+        ]
+        for url in urls:
+            ws = None
+            try:
+                ws = websocket.create_connection(url, header=headers, timeout=20)
+                for index, command in enumerate(commands, start=1):
+                    ws.send(json.dumps({"id": index, "command": command}, separators=(",", ":")))
+                ws.settimeout(20)
+                while time.time() < deadline:
+                    message = ws.recv()
+                    for payload in self._ws_payloads_from_message(message):
+                        yield payload
+                        if payload == "[DONE]":
+                            return
+                return
+            except Exception as exc:
+                last_error = exc
+                logger.warning({
+                    "event": "handoff_ws_failed",
+                    "topic_id": topic_id,
+                    "url": url.split("?", 1)[0],
+                    "error": repr(exc),
+                })
+            finally:
+                if ws is not None:
+                    try:
+                        ws.close()
+                    except Exception:
+                        pass
+        if last_error:
+            raise RuntimeError(f"stream handoff failed: {last_error}") from last_error
 
     def _codex_responses_headers(self) -> Dict[str, str]:
         headers = {
@@ -2597,10 +2704,23 @@ class OpenAIBackendAPI:
             stream=True,
         )
         ensure_ok(response, path)
+        resume_token = ""
+        topic_id = ""
+        handoff_detected = False
         try:
-            yield from iter_sse_payloads(response)
+            for item in iter_sse_payloads(response):
+                next_resume_token, next_topic_id = self._extract_handoff_state(item)
+                resume_token = next_resume_token or resume_token
+                topic_id = next_topic_id or topic_id
+                if resume_token and topic_id:
+                    handoff_detected = True
+                if handoff_detected and item == "[DONE]":
+                    continue
+                yield item
         finally:
             response.close()
+        if resume_token and topic_id:
+            yield from self._stream_handoff_topic(resume_token, topic_id)
 
     def _report_progress(self, step: str) -> None:
         """Report progress step to the callback if set."""
