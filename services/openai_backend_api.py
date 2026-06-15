@@ -67,6 +67,9 @@ EDITABLE_FILE_MODEL = "gpt-5-5-thinking"
 EDITABLE_FILE_THINKING_EFFORT = "extended"
 EDITABLE_FILE_TIMEOUT_SECS = 1200.0
 EDITABLE_FILE_POLL_INTERVAL_SECS = 5.0
+THINKING_TEXT_MODELS = {"gpt-5-5-thinking"}
+THINKING_TEXT_TIMEOUT_SECS = 180.0
+THINKING_TEXT_POLL_INTERVAL_SECS = 2.0
 EDITABLE_FILE_CLIENT_VERSION = "prod-bede35f9dcd856d080e012478f0c1031faa2588e"
 EDITABLE_FILE_CLIENT_BUILD_NUMBER = "6631702"
 EDITABLE_FILE_PSD_OUTPUT_DIR = "data/files/psd"
@@ -2033,6 +2036,168 @@ class OpenAIBackendAPI:
             raise RuntimeError("conversation_id not found in stream")
         return conversation_id
 
+    @staticmethod
+    def _plain_prompt_from_messages(messages: list[Dict[str, Any]]) -> str:
+        parts: list[str] = []
+        for message in messages:
+            role = str(message.get("role") or "user")
+            content = message.get("content")
+            text_parts: list[str] = []
+            if isinstance(content, str):
+                text_parts.append(content)
+            elif isinstance(content, list):
+                for item in content:
+                    if isinstance(item, str):
+                        text_parts.append(item)
+                    elif isinstance(item, dict):
+                        text_parts.append(str(item.get("text") or ""))
+            if not text_parts:
+                continue
+            text = "".join(text_parts).strip()
+            if text:
+                parts.append(f"{role}: {text}" if role != "user" else text)
+        return "\n".join(parts).strip()
+
+    def _prepare_thinking_text_conversation(self, prompt: str, model: str, thinking_effort: str) -> str:
+        path = "/backend-api/f/conversation/prepare"
+        response = self.session.post(
+            self.base_url + path,
+            headers=self._headers(path, {"Accept": "*/*", "Content-Type": "application/json", "X-Conduit-Token": "no-token"}),
+            json={
+                "action": "next",
+                "fork_from_shared_post": False,
+                "parent_message_id": "client-created-root",
+                "model": model,
+                "client_prepare_state": "success",
+                "timezone_offset_min": -480,
+                "timezone": "Asia/Shanghai",
+                "conversation_mode": {"kind": "primary_assistant"},
+                "system_hints": [],
+                "partial_query": {"id": new_uuid(), "author": {"role": "user"}, "content": {"content_type": "text", "parts": [prompt]}},
+                "supports_buffering": True,
+                "supported_encodings": ["v1"],
+                "client_contextual_info": {"app_name": "chatgpt.com"},
+                "thinking_effort": thinking_effort,
+            },
+            timeout=60,
+        )
+        ensure_ok(response, path)
+        token = str(response.json().get("conduit_token") or "")
+        if not token:
+            raise RuntimeError("missing conduit_token")
+        return token
+
+    def _run_thinking_text_conversation(self, prompt: str, conduit_token: str, model: str, thinking_effort: str) -> str:
+        requirements = self._get_chat_requirements()
+        path = "/backend-api/f/conversation"
+        response = self.session.post(
+            self.base_url + path,
+            headers=self._image_headers(path, requirements, conduit_token, "text/event-stream"),
+            json={
+                "action": "next",
+                "messages": [{
+                    "id": new_uuid(),
+                    "author": {"role": "user"},
+                    "create_time": time.time(),
+                    "content": {"content_type": "text", "parts": [prompt]},
+                    "metadata": {
+                        "developer_mode_connector_ids": [],
+                        "selected_github_repos": [],
+                        "selected_all_github_repos": False,
+                        "serialization_metadata": {"custom_symbol_offsets": []},
+                    },
+                }],
+                "parent_message_id": "client-created-root",
+                "model": model,
+                "client_prepare_state": "sent",
+                "timezone_offset_min": -480,
+                "timezone": "Asia/Shanghai",
+                "conversation_mode": {"kind": "primary_assistant"},
+                "enable_message_followups": True,
+                "system_hints": [],
+                "supports_buffering": True,
+                "supported_encodings": ["v1"],
+                "client_contextual_info": {
+                    "is_dark_mode": False,
+                    "time_since_loaded": 120,
+                    "page_height": 900,
+                    "page_width": 1400,
+                    "pixel_ratio": 2,
+                    "screen_height": 1440,
+                    "screen_width": 2560,
+                    "app_name": "chatgpt.com",
+                },
+                "paragen_cot_summary_display_override": "allow",
+                "force_parallel_switch": "auto",
+                "thinking_effort": thinking_effort,
+            },
+            timeout=300,
+            stream=True,
+        )
+        ensure_ok(response, path)
+        conversation_id = ""
+        try:
+            for payload in iter_sse_payloads(response):
+                conversation_id = conversation_id or self._find_search_value(payload, "conversation_id")
+                if payload == "[DONE]":
+                    break
+        finally:
+            response.close()
+        if not conversation_id:
+            raise RuntimeError("conversation_id not found in stream")
+        return conversation_id
+
+    def _extract_thinking_text_result(self, conversation: Dict[str, Any], model: str) -> tuple[str, str]:
+        text = ""
+        actual_model = ""
+        for node in sorted((conversation.get("mapping") or {}).values(), key=lambda item: float(((item or {}).get("message") or {}).get("create_time") or 0.0)):
+            message = (node or {}).get("message") or {}
+            if str(((message.get("author") or {}).get("role") or "")).strip() != "assistant":
+                continue
+            metadata = message.get("metadata") or {}
+            message_model = str(metadata.get("model_slug") or "")
+            if message_model and message_model != model:
+                continue
+            candidate = self._search_message_text(message)
+            if candidate:
+                text = candidate
+                actual_model = str(metadata.get("resolved_model_slug") or metadata.get("model_slug") or actual_model)
+        return text, actual_model
+
+    def _wait_thinking_text_result(self, conversation_id: str, model: str) -> tuple[str, str]:
+        deadline = time.time() + THINKING_TEXT_TIMEOUT_SECS
+        last_text = ""
+        last_model = ""
+        while time.time() < deadline:
+            text, actual_model = self._extract_thinking_text_result(self._get_search_conversation(conversation_id), model)
+            last_text = text or last_text
+            last_model = actual_model or last_model
+            if text:
+                return text, actual_model
+            time.sleep(THINKING_TEXT_POLL_INTERVAL_SECS)
+        if last_text:
+            return last_text, last_model
+        raise RuntimeError(f"timed out waiting for thinking text result: {conversation_id}")
+
+    def _stream_thinking_text_conversation(
+            self,
+            messages: list[Dict[str, Any]],
+            model: str,
+            thinking_effort: str,
+    ) -> Iterator[str]:
+        prompt = self._plain_prompt_from_messages(messages)
+        if not prompt:
+            raise RuntimeError("messages are required")
+        effort = self._normalize_thinking_effort(thinking_effort) or EDITABLE_FILE_THINKING_EFFORT
+        conduit_token = self._prepare_thinking_text_conversation(prompt, model, effort)
+        self._bootstrap()
+        conversation_id = self._run_thinking_text_conversation(prompt, conduit_token, model, effort)
+        text, actual_model = self._wait_thinking_text_result(conversation_id, model)
+        metadata = {"model_slug": actual_model or model} if actual_model else {"model_slug": model}
+        yield json.dumps({"type": "server_ste_metadata", "metadata": metadata, "conversation_id": conversation_id}, ensure_ascii=False)
+        yield json.dumps({"p": "/message/content/parts/0", "o": "append", "v": text, "conversation_id": conversation_id}, ensure_ascii=False)
+        yield "[DONE]"
+
     def _wait_search_result(self, conversation_id: str, timeout_secs: float, poll_interval_secs: float) -> Dict[str, Any]:
         deadline = time.time() + timeout_secs
         last_result: Dict[str, Any] | None = None
@@ -2692,6 +2857,10 @@ class OpenAIBackendAPI:
             return
 
         normalized = messages or [{"role": "user", "content": prompt}]
+        if model in THINKING_TEXT_MODELS and self._normalize_thinking_effort(thinking_effort):
+            yield from self._stream_thinking_text_conversation(normalized, model, thinking_effort)
+            return
+
         self._bootstrap()
         requirements = self._get_chat_requirements()
         path, timezone = self._chat_target()

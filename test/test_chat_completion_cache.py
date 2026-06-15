@@ -195,61 +195,25 @@ class ChatCompletionCacheTests(unittest.TestCase):
         self.assertEqual(payload["supported_encodings"], ["v1"])
         self.assertEqual(payload["client_contextual_info"]["app_name"], "chatgpt.com")
 
-    def test_stream_conversation_follows_handoff_topic(self) -> None:
-        class FakeResponse:
-            status_code = 200
-            headers = {}
-
-            def __init__(self, items):
-                self.items = items
-                self.closed = False
-
-            def iter_lines(self):
-                for item in self.items:
-                    yield f"data: {item}\n".encode("utf-8")
-
-            def close(self):
-                self.closed = True
-
-        first_stream = [
-            '"v1"',
-            json.dumps({"type": "resume_conversation_token", "token": "resume-token", "conversation_id": "conv-1"}),
-            json.dumps({
-                "type": "stream_handoff",
-                "conversation_id": "conv-1",
-                "options": [{"type": "subscribe_ws_topic", "topic_id": "conversation-turn-1"}],
-            }),
-            "[DONE]",
-        ]
+    def test_stream_conversation_uses_thinking_text_route_for_thinking_models(self) -> None:
         backend = OpenAIBackendAPI("token")
-        backend._bootstrap = lambda: None
-        backend._get_chat_requirements = lambda: mock.Mock(token="requirements-token", proof_token="")
-        backend._chat_target = lambda: ("/backend-api/conversation", "Asia/Shanghai")
-        backend.session.post = mock.Mock(return_value=FakeResponse(first_stream))
-        backend._stream_handoff_topic = mock.Mock(return_value=iter([
+        backend._stream_thinking_text_conversation = mock.Mock(return_value=iter([
+            json.dumps({"type": "server_ste_metadata", "metadata": {"model_slug": "gpt-5-5-thinking"}}),
             json.dumps({"p": "/message/content/parts/0", "o": "append", "v": "ok"}),
             "[DONE]",
         ]))
+        backend._bootstrap = mock.Mock()
 
         payloads = list(backend.stream_conversation(
             messages=[{"role": "user", "content": "hi"}],
             model="gpt-5-5-thinking",
-            thinking_effort="extended",
+            thinking_effort="high",
         ))
 
         self.assertEqual(payloads[-2], json.dumps({"p": "/message/content/parts/0", "o": "append", "v": "ok"}))
         self.assertEqual(payloads[-1], "[DONE]")
-        self.assertEqual(payloads.count("[DONE]"), 1)
-        backend._stream_handoff_topic.assert_called_once_with("resume-token", "conversation-turn-1")
-
-    def test_ws_payloads_from_message_unwraps_topic_payload(self) -> None:
-        payload = {"p": "/message/content/parts/0", "o": "append", "v": "ok"}
-        wrapped = json.dumps({"type": "event", "payload": payload})
-
-        self.assertEqual(
-            OpenAIBackendAPI._ws_payloads_from_message(wrapped),
-            [json.dumps(payload, ensure_ascii=False)],
-        )
+        backend._stream_thinking_text_conversation.assert_called_once()
+        backend._bootstrap.assert_not_called()
 
     def test_responses_completed_usage_includes_cached_tokens(self) -> None:
         with (
