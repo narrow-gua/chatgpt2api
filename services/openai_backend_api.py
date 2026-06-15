@@ -474,9 +474,26 @@ class OpenAIBackendAPI:
             })
         return conversation_messages
 
-    def _conversation_payload(self, messages: list[Dict[str, Any]], model: str, timezone: str) -> Dict[str, Any]:
+    @staticmethod
+    def _normalize_thinking_effort(value: str | None) -> str:
+        effort = str(value or "").strip().lower()
+        if effort in {"minimal", "low"}:
+            return "minimal"
+        if effort in {"medium", "normal", "standard"}:
+            return "medium"
+        if effort in {"high", "extended", "max", "maximum"}:
+            return "extended"
+        return ""
+
+    def _conversation_payload(
+            self,
+            messages: list[Dict[str, Any]],
+            model: str,
+            timezone: str,
+            thinking_effort: str = "",
+    ) -> Dict[str, Any]:
         """把标准 messages 构造成 web 对话请求体。"""
-        return {
+        payload = {
             "action": "next",
             "messages": self._api_messages_to_conversation_messages(messages),
             "model": model,
@@ -506,6 +523,19 @@ class OpenAIBackendAPI:
                 "screen_width": 2560,
             },
         }
+        effort = self._normalize_thinking_effort(thinking_effort)
+        if not effort and model == EDITABLE_FILE_MODEL:
+            effort = EDITABLE_FILE_THINKING_EFFORT
+        if effort:
+            payload.update({
+                "supports_buffering": True,
+                "supported_encodings": ["v1"],
+                "paragen_cot_summary_display_override": "allow",
+                "force_parallel_switch": "auto",
+                "thinking_effort": effort,
+            })
+            payload["client_contextual_info"]["app_name"] = "chatgpt.com"
+        return payload
 
     def _image_model_slug(self, model: str) -> str:
         """把标准图片模型名映射到底层 model slug。"""
@@ -2545,6 +2575,7 @@ class OpenAIBackendAPI:
             messages: Optional[list[Dict[str, Any]]] = None,
             model: str = "auto",
             prompt: str = "",
+            thinking_effort: str = "",
             images: Optional[list[str]] = None,
             system_hints: Optional[list[str]] = None,
     ) -> Iterator[str]:
@@ -2557,7 +2588,7 @@ class OpenAIBackendAPI:
         self._bootstrap()
         requirements = self._get_chat_requirements()
         path, timezone = self._chat_target()
-        payload = self._conversation_payload(normalized, model, timezone)
+        payload = self._conversation_payload(normalized, model, timezone, thinking_effort)
         response = self.session.post(
             self.base_url + path,
             headers=self._conversation_headers(path, requirements),

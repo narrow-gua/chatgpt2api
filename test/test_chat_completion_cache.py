@@ -6,6 +6,7 @@ import json
 import base64
 
 from services.config import config
+from services.openai_backend_api import OpenAIBackendAPI
 from services.protocol import openai_v1_chat_complete, openai_v1_response
 from services.protocol.chat_completion_cache import chat_completion_cache
 from services.protocol.conversation import iter_conversation_payloads, sanitize_output_text
@@ -142,6 +143,57 @@ class ChatCompletionCacheTests(unittest.TestCase):
         self.assertEqual(details["cached_tokens"], 0)
         output_details = response["usage"]["completion_tokens_details"]
         self.assertEqual(output_details["reasoning_tokens"], 0)
+
+    def test_chat_completion_passes_reasoning_effort_to_conversation_request(self) -> None:
+        requests = []
+
+        def fake_collect_text(_backend, request):
+            requests.append(request)
+            return "ok"
+
+        with (
+            mock.patch("services.protocol.openai_v1_chat_complete.text_backend", return_value=object()),
+            mock.patch("services.protocol.openai_v1_chat_complete.collect_text", side_effect=fake_collect_text),
+        ):
+            response = openai_v1_chat_complete.handle({
+                "model": "gpt-5-5-thinking",
+                "messages": [{"role": "user", "content": "hi"}],
+                "reasoning": {"effort": "high"},
+            })
+
+        self.assertEqual(response["choices"][0]["message"]["content"], "ok")
+        self.assertEqual(requests[0].thinking_effort, "high")
+
+    def test_chat_completion_defaults_thinking_model_to_extended_effort(self) -> None:
+        requests = []
+
+        def fake_collect_text(_backend, request):
+            requests.append(request)
+            return "ok"
+
+        with (
+            mock.patch("services.protocol.openai_v1_chat_complete.text_backend", return_value=object()),
+            mock.patch("services.protocol.openai_v1_chat_complete.collect_text", side_effect=fake_collect_text),
+        ):
+            openai_v1_chat_complete.handle({
+                "model": "gpt-5-5-thinking",
+                "messages": [{"role": "user", "content": "hi"}],
+            })
+
+        self.assertEqual(requests[0].thinking_effort, "extended")
+
+    def test_conversation_payload_maps_high_reasoning_to_thinking_mode(self) -> None:
+        payload = OpenAIBackendAPI()._conversation_payload(
+            [{"role": "user", "content": "hi"}],
+            "gpt-5-5-thinking",
+            "Asia/Shanghai",
+            "high",
+        )
+
+        self.assertEqual(payload["thinking_effort"], "extended")
+        self.assertEqual(payload["force_parallel_switch"], "auto")
+        self.assertEqual(payload["supported_encodings"], ["v1"])
+        self.assertEqual(payload["client_contextual_info"]["app_name"], "chatgpt.com")
 
     def test_responses_completed_usage_includes_cached_tokens(self) -> None:
         with (

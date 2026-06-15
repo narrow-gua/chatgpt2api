@@ -96,11 +96,24 @@ def completion_response(
     }
 
 
-def stream_text_chat_completion(backend, messages: list[dict[str, Any]], model: str) -> Iterator[dict[str, Any]]:
+def request_thinking_effort(body: dict[str, Any], model: str) -> str:
+    value = body.get("thinking_effort") or body.get("reasoning_effort")
+    reasoning = body.get("reasoning")
+    if not value and isinstance(reasoning, dict):
+        value = reasoning.get("effort")
+    effort = str(value or "").strip()
+    if effort:
+        return effort
+    if str(model or "").strip() == "gpt-5-5-thinking":
+        return "extended"
+    return ""
+
+
+def stream_text_chat_completion(backend, messages: list[dict[str, Any]], model: str, thinking_effort: str = "") -> Iterator[dict[str, Any]]:
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
     sent_role = False
-    request = ConversationRequest(model=model, messages=messages)
+    request = ConversationRequest(model=model, messages=messages, thinking_effort=thinking_effort)
     for delta_text in stream_text_deltas(backend, request):
         if not sent_role:
             sent_role = True
@@ -264,16 +277,18 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
         if is_image_chat_request(body):
             return image_chat_events(body)
         model, messages = text_chat_parts(body)
+        thinking_effort = request_thinking_effort(body, model)
         if is_web_search_chat_request(body) and not has_unsupported_tools(body, WEB_SEARCH_TOOL_TYPES):
             return stream_web_search_chat_completion(messages, model)
         key = cache_key(body, messages, stream=True)
         return chat_completion_cache.get_or_compute_stream(
             key,
-            lambda: stream_text_chat_completion(text_backend(model), messages, model),
+            lambda: stream_text_chat_completion(text_backend(model), messages, model, thinking_effort),
         )
     if is_image_chat_request(body):
         return image_chat_response(body)
     model, messages = text_chat_parts(body)
+    thinking_effort = request_thinking_effort(body, model)
     if is_web_search_chat_request(body) and not has_unsupported_tools(body, WEB_SEARCH_TOOL_TYPES):
         return web_search_chat_response(messages, model)
     key = cache_key(body, messages, stream=False)
@@ -281,7 +296,7 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
         key,
         lambda: completion_response(
             model,
-            collect_text(text_backend(model), ConversationRequest(model=model, messages=messages)),
+            collect_text(text_backend(model), ConversationRequest(model=model, messages=messages, thinking_effort=thinking_effort)),
             messages=messages,
         ),
     )
