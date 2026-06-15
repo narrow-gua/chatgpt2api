@@ -317,6 +317,7 @@ class ConversationState:
     blocked: bool = False
     tool_invoked: bool | None = None
     turn_use_case: str = ""
+    actual_model_slug: str = ""
 
 
 @dataclass
@@ -593,6 +594,12 @@ def update_conversation_state(state: ConversationState, payload: str, event: dic
             if isinstance(metadata.get("tool_invoked"), bool):
                 state.tool_invoked = metadata["tool_invoked"]
             state.turn_use_case = str(metadata.get("turn_use_case") or state.turn_use_case)
+            state.actual_model_slug = str(metadata.get("model_slug") or state.actual_model_slug)
+    message = event.get("message")
+    if isinstance(message, dict):
+        metadata = message.get("metadata")
+        if isinstance(metadata, dict):
+            state.actual_model_slug = str(metadata.get("resolved_model_slug") or state.actual_model_slug)
 
 
 def conversation_base_event(event_type: str, state: ConversationState, **extra: Any) -> dict[str, Any]:
@@ -605,6 +612,7 @@ def conversation_base_event(event_type: str, state: ConversationState, **extra: 
         "blocked": state.blocked,
         "tool_invoked": state.tool_invoked,
         "turn_use_case": state.turn_use_case,
+        "actual_model_slug": state.actual_model_slug,
         **extra,
     }
 
@@ -671,8 +679,8 @@ def conversation_events(
     yield from iter_conversation_payloads(payloads, history_text, history_messages)
 
 
-def text_backend() -> OpenAIBackendAPI:
-    return OpenAIBackendAPI(access_token=account_service.get_text_access_token())
+def text_backend(model: str | None = None) -> OpenAIBackendAPI:
+    return OpenAIBackendAPI(access_token=account_service.get_text_access_token(model=model))
 
 
 def stream_text_deltas(backend: OpenAIBackendAPI, request: ConversationRequest) -> Iterator[str]:
@@ -686,7 +694,11 @@ def stream_text_deltas(backend: OpenAIBackendAPI, request: ConversationRequest) 
             attempted_tokens.add(token)
         try:
             active_backend = OpenAIBackendAPI(access_token=token)
+            actual_model_slug = ""
             for event in conversation_events(active_backend, messages=request.messages, model=request.model, prompt=request.prompt):
+                actual = str(event.get("actual_model_slug") or "").strip()
+                if actual:
+                    actual_model_slug = actual
                 if event.get("type") != "conversation.delta":
                     continue
                 delta = str(event.get("delta") or "")
@@ -703,7 +715,7 @@ def stream_text_deltas(backend: OpenAIBackendAPI, request: ConversationRequest) 
                     token = refreshed_token
                 else:
                     account_service.remove_invalid_token(token, "text_stream")
-                    token = account_service.get_text_access_token(attempted_tokens)
+                    token = account_service.get_text_access_token(attempted_tokens, model=request.model)
                 if token:
                     continue
             raise

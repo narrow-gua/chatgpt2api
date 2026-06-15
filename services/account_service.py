@@ -172,6 +172,20 @@ class AccountService:
         return str(value or "web").strip().lower() or "web"
 
     @staticmethod
+    def _normalize_model_slugs(value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        seen: set[str] = set()
+        result: list[str] = []
+        for item in value:
+            slug = str(item or "").strip()
+            if not slug or slug in seen:
+                continue
+            seen.add(slug)
+            result.append(slug)
+        return result
+
+    @staticmethod
     def _normalize_account_type(value: object) -> str | None:
         raw = str(value or "").strip()
         if not raw:
@@ -237,6 +251,9 @@ class AccountService:
         limits_progress = normalized.get("limits_progress")
         normalized["limits_progress"] = limits_progress if isinstance(limits_progress, list) else []
         normalized["default_model_slug"] = normalized.get("default_model_slug") or None
+        normalized["model_slugs"] = self._normalize_model_slugs(
+            normalized.get("model_slugs") or normalized.get("models")
+        )
         normalized["restore_at"] = normalized.get("restore_at") or None
         normalized["success"] = int(normalized.get("success") or 0)
         normalized["fail"] = int(normalized.get("fail") or 0)
@@ -1019,13 +1036,25 @@ class AccountService:
             if plan_type or source_type else f"no available image quota (tried {len(attempted_tokens)} tokens)"
         )
 
-    def get_text_access_token(self, excluded_tokens: set[str] | None = None) -> str:
+    @classmethod
+    def _account_supports_model(cls, account: dict, model: str | None = None) -> bool:
+        requested = str(model or "").strip()
+        if not requested or requested == "auto":
+            return True
+        model_slugs = cls._normalize_model_slugs(account.get("model_slugs"))
+        if not model_slugs:
+            return True
+        return requested in set(model_slugs)
+
+    def get_text_access_token(self, excluded_tokens: set[str] | None = None, model: str | None = None) -> str:
         excluded = set(excluded_tokens or set())
         with self._lock:
             candidates = [
                 token
                 for account in self._accounts.values()
                 if account.get("status") not in {"禁用", "异常"}
+                   and self._normalize_source_type(account.get("source_type")) != "codex"
+                   and self._account_supports_model(account, model)
                    and (token := account.get("access_token") or "")
                    and token not in excluded
             ]
@@ -1404,12 +1433,46 @@ class AccountService:
         active_token = self.refresh_access_token(access_token, event=f"{event}:preflight") or access_token
         try:
             from services.openai_backend_api import InvalidAccessTokenError, OpenAIBackendAPI
-            result = OpenAIBackendAPI(active_token).get_user_info()
+            backend = OpenAIBackendAPI(active_token)
+            result = backend.get_user_info()
+            try:
+                models_payload = backend.list_models()
+            except Exception as exc:
+                log_service.add(
+                    LOG_TYPE_ACCOUNT,
+                    "刷新账号模型列表失败",
+                    {"source": event, "token": anonymize_token(active_token), "error": str(exc)},
+                )
+            else:
+                model_slugs = [
+                    slug
+                    for item in models_payload.get("data", [])
+                    if isinstance(item, dict) and (slug := str(item.get("id") or "").strip())
+                ]
+                if model_slugs:
+                    result["model_slugs"] = model_slugs
         except InvalidAccessTokenError as exc:
             refreshed_token = self.refresh_access_token(active_token, force=True, event=f"{event}:invalid_access_token")
             if refreshed_token and refreshed_token != active_token:
                 try:
-                    result = OpenAIBackendAPI(refreshed_token).get_user_info()
+                    backend = OpenAIBackendAPI(refreshed_token)
+                    result = backend.get_user_info()
+                    try:
+                        models_payload = backend.list_models()
+                    except Exception as model_exc:
+                        log_service.add(
+                            LOG_TYPE_ACCOUNT,
+                            "刷新账号模型列表失败",
+                            {"source": event, "token": anonymize_token(refreshed_token), "error": str(model_exc)},
+                        )
+                    else:
+                        model_slugs = [
+                            slug
+                            for item in models_payload.get("data", [])
+                            if isinstance(item, dict) and (slug := str(item.get("id") or "").strip())
+                        ]
+                        if model_slugs:
+                            result["model_slugs"] = model_slugs
                 except InvalidAccessTokenError as retry_exc:
                     if self._record_invalid_token_seen(
                         refreshed_token,

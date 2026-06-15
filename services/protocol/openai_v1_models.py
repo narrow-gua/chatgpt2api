@@ -7,14 +7,77 @@ from services.openai_backend_api import OpenAIBackendAPI
 from utils.helper import CODEX_IMAGE_MODEL
 
 
+def _model_item(slug: str, owned_by: str = "chatgpt", created: int = 0) -> dict[str, Any]:
+    return {
+        "id": slug,
+        "object": "model",
+        "created": created,
+        "owned_by": owned_by,
+        "permission": [],
+        "root": slug,
+        "parent": None,
+    }
+
+
+def _account_model_slugs(account: dict[str, Any]) -> list[str]:
+    raw = account.get("model_slugs")
+    if not isinstance(raw, list):
+        return []
+    seen: set[str] = set()
+    slugs: list[str] = []
+    for item in raw:
+        slug = str(item or "").strip()
+        if not slug or slug in seen:
+            continue
+        seen.add(slug)
+        slugs.append(slug)
+    return slugs
+
+
+def _load_account_model_slugs(account: dict[str, Any]) -> list[str]:
+    slugs = _account_model_slugs(account)
+    if slugs:
+        return slugs
+    token = str(account.get("access_token") or "").strip()
+    if not token:
+        return []
+    try:
+        result = OpenAIBackendAPI(token).list_models()
+    except Exception:
+        return []
+    slugs = [
+        slug
+        for item in result.get("data", [])
+        if isinstance(item, dict) and (slug := str(item.get("id") or "").strip())
+    ]
+    if slugs:
+        account_service.update_account(token, {"model_slugs": slugs}, quiet=True)
+    return slugs
+
+
 def list_models() -> dict[str, Any]:
-    result = OpenAIBackendAPI().list_models()
-    data = result.get("data")
-    if not isinstance(data, list):
-        return result
+    accounts = account_service.list_accounts()
+    web_text_accounts = [
+        account
+        for account in accounts
+        if isinstance(account, dict)
+           and account.get("status") not in {"禁用", "异常"}
+           and account_service._normalize_source_type(account.get("source_type")) != "codex"
+    ]
+    if web_text_accounts:
+        model_slugs: set[str] = set()
+        for account in web_text_accounts:
+            model_slugs.update(_load_account_model_slugs(account))
+        data = [_model_item(slug) for slug in sorted(model_slugs)]
+        result = {"object": "list", "data": data}
+    else:
+        result = OpenAIBackendAPI().list_models()
+        data = result.get("data")
+        if not isinstance(data, list):
+            return result
+
     seen = {str(item.get("id") or "").strip() for item in data if isinstance(item, dict)}
     dynamic_models: set[str] = set()
-    accounts = account_service.list_accounts()
     web_image_accounts = [
         account
         for account in accounts
@@ -41,13 +104,5 @@ def list_models() -> dict[str, Any]:
 
     for model in sorted(dynamic_models):
         if model not in seen:
-            data.append({
-                "id": model,
-                "object": "model",
-                "created": 0,
-                "owned_by": "chatgpt2api",
-                "permission": [],
-                "root": model,
-                "parent": None,
-            })
+            data.append(_model_item(model, owned_by="chatgpt2api"))
     return result

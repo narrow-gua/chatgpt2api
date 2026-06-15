@@ -62,6 +62,33 @@ class ModelListTests(unittest.TestCase):
         self.assertNotIn("codex-gpt-image-2", ids)
         self.assertNotIn("plus-codex-gpt-image-2", ids)
 
+    def test_list_models_uses_web_account_model_slugs(self):
+        with (
+            mock.patch.object(
+                openai_v1_models.OpenAIBackendAPI,
+                "list_models",
+                return_value={"object": "list", "data": [{"id": "gpt-5-5"}]},
+            ),
+            mock.patch.object(
+                openai_v1_models.account_service,
+                "list_accounts",
+                return_value=[
+                    {
+                        "access_token": "token-web-free",
+                        "type": "free",
+                        "source_type": "web",
+                        "status": "正常",
+                        "model_slugs": ["gpt-5-3-mini"],
+                    },
+                ],
+            ),
+        ):
+            result = openai_v1_models.list_models()
+
+        ids = {item["id"] for item in result["data"]}
+        self.assertIn("gpt-5-3-mini", ids)
+        self.assertNotIn("gpt-5-5", ids)
+
     def test_list_models_function(self):
         """测试直接调用服务层获取模型列表。"""
         result = openai_v1_models.list_models()

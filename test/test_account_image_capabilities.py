@@ -97,6 +97,35 @@ class AccountCapabilityTests(unittest.TestCase):
             self.assertEqual(plus_token, "token-plus")
             self.assertEqual(pro_token, "token-pro")
 
+    def test_get_text_access_token_filters_by_model_and_excludes_codex(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.add_account_items(
+                [
+                    {
+                        "access_token": "token-mini",
+                        "source_type": "web",
+                        "status": "正常",
+                        "model_slugs": ["gpt-5-3-mini"],
+                    },
+                    {
+                        "access_token": "token-five-five",
+                        "source_type": "web",
+                        "status": "正常",
+                        "model_slugs": ["gpt-5-5"],
+                    },
+                    {
+                        "access_token": "token-codex",
+                        "source_type": "codex",
+                        "status": "正常",
+                        "model_slugs": ["gpt-5-5"],
+                    },
+                ]
+            )
+
+            self.assertEqual(service.get_text_access_token(model="gpt-5-5"), "token-five-five")
+            self.assertEqual(service.get_text_access_token(model="gpt-5-3-mini"), "token-mini")
+
     def test_refresh_accounts_can_remove_invalid_token_without_confirmation_delay(self) -> None:
         original_value = config.data.get("auto_remove_invalid_accounts")
         config.data["auto_remove_invalid_accounts"] = True
