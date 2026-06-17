@@ -2219,14 +2219,24 @@ class OpenAIBackendAPI:
             return {}
         if not isinstance(payload, dict):
             return {}
-        supported = {"search_query", "open", "find"}
-        return payload if any(key in payload for key in supported) else {}
+        return payload if (
+            any(str(key).endswith("search_query") for key in payload)
+            or any(key in payload for key in {"open", "find"})
+        ) else {}
 
     @staticmethod
     def _search_query_items(value: Any) -> list[Dict[str, Any]]:
         if not isinstance(value, list):
             return []
         return [item for item in value if isinstance(item, dict) and str(item.get("q") or "").strip()]
+
+    @classmethod
+    def _all_search_query_items(cls, tool_call: Dict[str, Any]) -> list[Dict[str, Any]]:
+        items: list[Dict[str, Any]] = []
+        for key, value in tool_call.items():
+            if str(key).endswith("search_query"):
+                items.extend(cls._search_query_items(value))
+        return items
 
     @staticmethod
     def _tool_items(value: Any) -> list[Dict[str, Any]]:
@@ -2337,7 +2347,7 @@ class OpenAIBackendAPI:
             ref_urls: Dict[str, Dict[str, str]],
     ) -> str:
         sections: list[str] = []
-        for query_index, item in enumerate(self._search_query_items(tool_call.get("search_query"))):
+        for query_index, item in enumerate(self._all_search_query_items(tool_call)):
             query = str(item.get("q") or "").strip()
             if not query:
                 continue

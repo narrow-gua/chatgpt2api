@@ -230,6 +230,16 @@ class ChatCompletionCacheTests(unittest.TestCase):
 
         self.assertEqual(payload["open"][0]["ref_id"], "turn0search0")
 
+    def test_parse_thinking_browser_tool_call_with_prefixed_search_query(self) -> None:
+        payload = OpenAIBackendAPI._parse_thinking_browser_tool_call(
+            '{"system1_search_query":[{"q":"site:feishu.cn 妙搭"}],"response_length":"long"}'
+        )
+
+        self.assertEqual(
+            OpenAIBackendAPI._all_search_query_items(payload)[0]["q"],
+            "site:feishu.cn 妙搭",
+        )
+
     def test_thinking_text_route_executes_browser_tool_followup(self) -> None:
         backend = OpenAIBackendAPI("token")
         backend._prepare_thinking_text_conversation = mock.Mock(side_effect=["token-1", "token-2"])
