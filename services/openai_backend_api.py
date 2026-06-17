@@ -1,9 +1,12 @@
 import base64
+import html
+import ipaddress
 import json
 import mimetypes
 import os
 import random
 import re
+import socket
 import time
 
 import urllib.error
@@ -15,7 +18,7 @@ from io import BytesIO
 from pathlib import Path
 from collections.abc import Callable
 from typing import Any, Dict, Iterator, Optional
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 from curl_cffi import requests
 from PIL import Image
@@ -70,6 +73,10 @@ EDITABLE_FILE_POLL_INTERVAL_SECS = 5.0
 THINKING_TEXT_MODELS = {"gpt-5-5-thinking"}
 THINKING_TEXT_TIMEOUT_SECS = 180.0
 THINKING_TEXT_POLL_INTERVAL_SECS = 2.0
+THINKING_TEXT_TOOL_MAX_ROUNDS = 2
+THINKING_TEXT_TOOL_RESULT_CHARS = 16000
+THINKING_TEXT_OPEN_MAX_PAGES = 4
+THINKING_TEXT_OPEN_PAGE_CHARS = 5000
 EDITABLE_FILE_CLIENT_VERSION = "prod-bede35f9dcd856d080e012478f0c1031faa2588e"
 EDITABLE_FILE_CLIENT_BUILD_NUMBER = "6631702"
 EDITABLE_FILE_PSD_OUTPUT_DIR = "data/files/psd"
@@ -2188,6 +2195,232 @@ class OpenAIBackendAPI:
             raise RuntimeError(f"timed out waiting for thinking text result: {conversation_id}; last_error={last_error}")
         raise RuntimeError(f"timed out waiting for thinking text result: {conversation_id}")
 
+    @staticmethod
+    def _parse_thinking_browser_tool_call(text: str) -> Dict[str, Any]:
+        text = str(text or "").strip()
+        if not text:
+            return {}
+        fenced = re.fullmatch(r"(?is)```(?:json)?\s*(.*?)\s*```\.?", text)
+        if fenced:
+            text = fenced.group(1).strip()
+        if not text.startswith("{"):
+            start = text.find("{")
+            end = text.rfind("}")
+            if start < 0 or end <= start:
+                return {}
+            text = text[start:end + 1]
+        else:
+            end = text.rfind("}")
+            if end >= 0:
+                text = text[:end + 1]
+        try:
+            payload = json.loads(text)
+        except Exception:
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        supported = {"search_query", "open", "find"}
+        return payload if any(key in payload for key in supported) else {}
+
+    @staticmethod
+    def _search_query_items(value: Any) -> list[Dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        return [item for item in value if isinstance(item, dict) and str(item.get("q") or "").strip()]
+
+    @staticmethod
+    def _tool_items(value: Any) -> list[Dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        return [item for item in value if isinstance(item, dict)]
+
+    @staticmethod
+    def _is_public_http_url(url: str) -> bool:
+        parsed = urlparse(str(url or "").strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return False
+        host = parsed.hostname
+        try:
+            infos = socket.getaddrinfo(host, None)
+        except Exception:
+            return False
+        for info in infos:
+            try:
+                ip = ipaddress.ip_address(info[4][0])
+            except Exception:
+                return False
+            if (
+                ip.is_private
+                or ip.is_loopback
+                or ip.is_link_local
+                or ip.is_multicast
+                or ip.is_reserved
+                or ip.is_unspecified
+            ):
+                return False
+        return True
+
+    @staticmethod
+    def _html_to_readable_text(raw: str) -> str:
+        raw = re.sub(r"(?is)<(script|style|noscript|svg|canvas)\b.*?</\1>", " ", raw or "")
+        title_match = re.search(r"(?is)<title\b[^>]*>(.*?)</title>", raw)
+        title = html.unescape(re.sub(r"(?is)<[^>]+>", " ", title_match.group(1))).strip() if title_match else ""
+        body = re.sub(r"(?is)<br\s*/?>|</p>|</div>|</li>|</h[1-6]>", "\n", raw)
+        body = re.sub(r"(?is)<[^>]+>", " ", body)
+        body = html.unescape(body)
+        body = re.sub(r"[ \t\r\f\v]+", " ", body)
+        body = re.sub(r"\n\s*\n+", "\n", body)
+        body = "\n".join(line.strip() for line in body.splitlines() if line.strip())
+        if title and not body.startswith(title):
+            body = f"{title}\n{body}" if body else title
+        return body.strip()
+
+    def _fetch_thinking_open_page(self, url: str) -> Dict[str, str]:
+        url = str(url or "").strip()
+        current_url = url
+        try:
+            response = None
+            for _ in range(4):
+                if not self._is_public_http_url(current_url):
+                    return {"url": current_url, "error": "unsupported or unsafe url"}
+                response = requests.get(
+                    current_url,
+                    headers={
+                        "User-Agent": (
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/130.0.0.0 Safari/537.36"
+                        ),
+                        "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8",
+                    },
+                    timeout=30,
+                    allow_redirects=False,
+                )
+                if response.status_code not in {301, 302, 303, 307, 308}:
+                    break
+                location = str(response.headers.get("location") or "").strip()
+                if not location:
+                    break
+                current_url = urljoin(current_url, location)
+            if response is None:
+                return {"url": url, "error": "request failed"}
+            final_url = str(response.url or url)
+            content_type = str(response.headers.get("content-type") or "").lower()
+            if response.status_code >= 400:
+                return {"url": final_url, "error": f"http {response.status_code}"}
+            text = response.text if "text" in content_type or "html" in content_type or not content_type else ""
+            if not text:
+                return {"url": final_url, "error": f"unsupported content-type {content_type}"}
+            return {"url": final_url, "text": self._html_to_readable_text(text)[:THINKING_TEXT_OPEN_PAGE_CHARS]}
+        except Exception as exc:
+            return {"url": url, "error": str(exc)}
+
+    @staticmethod
+    def _source_line(index: int, source: Dict[str, Any], ref_id: str = "") -> str:
+        title = str(source.get("title") or source.get("url") or "").strip()
+        url = str(source.get("url") or "").strip()
+        snippet = str(source.get("snippet") or "").strip()
+        prefix = f"{index}. "
+        if ref_id:
+            prefix += f"[{ref_id}] "
+        parts = [prefix + title]
+        if url:
+            parts.append(url)
+        if snippet:
+            parts.append(snippet)
+        return "\n   ".join(parts)
+
+    def _execute_thinking_browser_tools(
+            self,
+            tool_call: Dict[str, Any],
+            original_prompt: str,
+            ref_urls: Dict[str, Dict[str, str]],
+    ) -> str:
+        sections: list[str] = []
+        for query_index, item in enumerate(self._search_query_items(tool_call.get("search_query"))):
+            query = str(item.get("q") or "").strip()
+            if not query:
+                continue
+            try:
+                result = self.search(query, timeout_secs=120.0, poll_interval_secs=2.0)
+            except Exception as exc:
+                sections.append(f"Search query failed: {query}\nError: {exc}")
+                continue
+            answer = str(result.get("answer") or "").strip()
+            sources = result.get("sources") if isinstance(result.get("sources"), list) else []
+            lines = [f"Search query: {query}"]
+            if answer:
+                lines.append(f"Search answer:\n{answer}")
+            if sources:
+                lines.append("Search sources:")
+                for source_index, source in enumerate(sources[:8]):
+                    if not isinstance(source, dict):
+                        continue
+                    ref_id = f"turn0search{len(ref_urls)}"
+                    url = str(source.get("url") or "").strip()
+                    if url:
+                        ref_urls[ref_id] = {
+                            "url": url,
+                            "title": str(source.get("title") or "").strip(),
+                            "snippet": str(source.get("snippet") or "").strip(),
+                        }
+                    lines.append(self._source_line(source_index + 1, source, ref_id))
+            sections.append("\n".join(lines))
+
+        open_items = self._tool_items(tool_call.get("open"))
+        urls_to_open: list[Dict[str, str]] = []
+        for item in open_items:
+            ref_id = str(item.get("ref_id") or item.get("url") or "").strip()
+            if ref_id in ref_urls:
+                urls_to_open.append(ref_urls[ref_id])
+            elif ref_id.startswith(("http://", "https://")):
+                urls_to_open.append({"url": ref_id, "title": ref_id, "snippet": ""})
+
+        if open_items and not urls_to_open:
+            try:
+                result = self.search(original_prompt, timeout_secs=120.0, poll_interval_secs=2.0)
+                sources = result.get("sources") if isinstance(result.get("sources"), list) else []
+                urls_to_open = [
+                    {
+                        "url": str(source.get("url") or "").strip(),
+                        "title": str(source.get("title") or "").strip(),
+                        "snippet": str(source.get("snippet") or "").strip(),
+                    }
+                    for source in sources
+                    if isinstance(source, dict) and str(source.get("url") or "").strip()
+                ][:THINKING_TEXT_OPEN_MAX_PAGES]
+                if result.get("answer"):
+                    sections.append(f"Fallback search answer for unresolved open refs:\n{result.get('answer')}")
+            except Exception as exc:
+                sections.append(f"Fallback search failed for unresolved open refs: {exc}")
+
+        opened: list[str] = []
+        for index, source in enumerate(urls_to_open[:THINKING_TEXT_OPEN_MAX_PAGES], start=1):
+            url = str(source.get("url") or "").strip()
+            page = self._fetch_thinking_open_page(url)
+            title = str(source.get("title") or page.get("url") or url).strip()
+            if page.get("error"):
+                opened.append(f"{index}. {title}\nURL: {page.get('url') or url}\nError: {page['error']}")
+            else:
+                opened.append(f"{index}. {title}\nURL: {page.get('url') or url}\nContent:\n{page.get('text') or ''}")
+        if opened:
+            sections.append("Opened pages:\n" + "\n\n".join(opened))
+
+        if not sections:
+            return "No supported browser tool results were produced."
+        return "\n\n".join(sections)[:THINKING_TEXT_TOOL_RESULT_CHARS]
+
+    @staticmethod
+    def _thinking_browser_followup_prompt(original_prompt: str, tool_result: str) -> str:
+        return (
+            "用户原始问题如下：\n"
+            f"{original_prompt}\n\n"
+            "你上一条回复请求调用浏览工具。下面是服务端已经执行后的工具结果：\n"
+            f"{tool_result}\n\n"
+            "请基于这些资料直接回答用户原始问题。不要输出 JSON，不要输出工具调用参数；"
+            "如果引用网页信息，请在回答末尾列出来源 URL。"
+        )
+
     def _stream_thinking_text_conversation(
             self,
             messages: list[Dict[str, Any]],
@@ -2198,10 +2431,23 @@ class OpenAIBackendAPI:
         if not prompt:
             raise RuntimeError("messages are required")
         effort = self._normalize_thinking_effort(thinking_effort) or EDITABLE_FILE_THINKING_EFFORT
-        conduit_token = self._prepare_thinking_text_conversation(prompt, model, effort)
-        self._bootstrap()
-        conversation_id = self._run_thinking_text_conversation(prompt, conduit_token, model, effort)
-        text, actual_model = self._wait_thinking_text_result(conversation_id, model)
+        original_prompt = prompt
+        ref_urls: Dict[str, Dict[str, str]] = {}
+        actual_model = ""
+        conversation_id = ""
+        text = ""
+        for round_index in range(THINKING_TEXT_TOOL_MAX_ROUNDS + 1):
+            conduit_token = self._prepare_thinking_text_conversation(prompt, model, effort)
+            self._bootstrap()
+            conversation_id = self._run_thinking_text_conversation(prompt, conduit_token, model, effort)
+            text, actual_model = self._wait_thinking_text_result(conversation_id, model)
+            tool_call = self._parse_thinking_browser_tool_call(text)
+            if not tool_call:
+                break
+            if round_index >= THINKING_TEXT_TOOL_MAX_ROUNDS:
+                raise RuntimeError("thinking model requested browser tools but did not produce a final answer")
+            tool_result = self._execute_thinking_browser_tools(tool_call, original_prompt, ref_urls)
+            prompt = self._thinking_browser_followup_prompt(original_prompt, tool_result)
         metadata = {"model_slug": actual_model or model} if actual_model else {"model_slug": model}
         yield json.dumps({"type": "server_ste_metadata", "metadata": metadata, "conversation_id": conversation_id}, ensure_ascii=False)
         yield json.dumps({"p": "/message/content/parts/0", "o": "append", "v": text, "conversation_id": conversation_id}, ensure_ascii=False)

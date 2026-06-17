@@ -223,6 +223,34 @@ class ChatCompletionCacheTests(unittest.TestCase):
         backend._stream_thinking_text_conversation.assert_called_once()
         backend._bootstrap.assert_not_called()
 
+    def test_parse_thinking_browser_tool_call_with_trailing_period(self) -> None:
+        payload = OpenAIBackendAPI._parse_thinking_browser_tool_call(
+            '{"open":[{"ref_id":"turn0search0"}],"response_length":"long"} .'
+        )
+
+        self.assertEqual(payload["open"][0]["ref_id"], "turn0search0")
+
+    def test_thinking_text_route_executes_browser_tool_followup(self) -> None:
+        backend = OpenAIBackendAPI("token")
+        backend._prepare_thinking_text_conversation = mock.Mock(side_effect=["token-1", "token-2"])
+        backend._bootstrap = mock.Mock()
+        backend._run_thinking_text_conversation = mock.Mock(side_effect=["conv-1", "conv-2"])
+        backend._wait_thinking_text_result = mock.Mock(side_effect=[
+            ('{"open":[{"ref_id":"turn0search0"}],"response_length":"long"} .', "gpt-5-5-thinking"),
+            ("妙搭是飞书的低代码平台。", "gpt-5-5-thinking"),
+        ])
+        backend._execute_thinking_browser_tools = mock.Mock(return_value="Opened pages:\n飞书妙搭资料")
+
+        payloads = list(backend._stream_thinking_text_conversation(
+            [{"role": "user", "content": "介绍飞书妙搭"}],
+            "gpt-5-5-thinking",
+            "extended",
+        ))
+
+        self.assertIn("妙搭是飞书的低代码平台", payloads[-2])
+        backend._execute_thinking_browser_tools.assert_called_once()
+        self.assertEqual(backend._prepare_thinking_text_conversation.call_count, 2)
+
     def test_wait_thinking_text_result_retries_temporary_detail_errors(self) -> None:
         backend = OpenAIBackendAPI("token")
         calls = 0
