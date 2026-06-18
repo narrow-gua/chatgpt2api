@@ -292,7 +292,48 @@ class ChatCompletionCacheTests(unittest.TestCase):
 
         self.assertEqual(text, "ok")
         self.assertEqual(model, "gpt-5-5-thinking")
-        self.assertEqual(calls, 2)
+        self.assertGreaterEqual(calls, 2)
+
+    def test_wait_thinking_text_result_waits_for_stable_or_finished_text(self) -> None:
+        backend = OpenAIBackendAPI("token")
+        responses = [
+            {
+                "mapping": {
+                    "assistant": {
+                        "message": {
+                            "create_time": 2,
+                            "author": {"role": "assistant"},
+                            "metadata": {"model_slug": "gpt-5-5-thinking"},
+                            "content": {"parts": ["short intro"]},
+                        }
+                    }
+                }
+            },
+            {
+                "mapping": {
+                    "assistant": {
+                        "message": {
+                            "create_time": 2,
+                            "author": {"role": "assistant"},
+                            "metadata": {
+                                "model_slug": "gpt-5-5-thinking",
+                                "resolved_model_slug": "gpt-5-5-thinking",
+                                "finish_details": {"type": "finished_successfully"},
+                            },
+                            "content": {"parts": ["short intro with the complete answer"]},
+                        }
+                    }
+                }
+            },
+        ]
+
+        backend._get_search_conversation = mock.Mock(side_effect=responses)
+        with mock.patch("services.openai_backend_api.time.sleep", return_value=None):
+            text, model = backend._wait_thinking_text_result("conv-1", "gpt-5-5-thinking")
+
+        self.assertEqual(text, "short intro with the complete answer")
+        self.assertEqual(model, "gpt-5-5-thinking")
+        self.assertEqual(backend._get_search_conversation.call_count, 2)
 
     def test_responses_completed_usage_includes_cached_tokens(self) -> None:
         with (

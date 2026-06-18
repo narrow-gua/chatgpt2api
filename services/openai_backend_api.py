@@ -73,6 +73,7 @@ EDITABLE_FILE_POLL_INTERVAL_SECS = 5.0
 THINKING_TEXT_MODELS = {"gpt-5-5-thinking"}
 THINKING_TEXT_TIMEOUT_SECS = 180.0
 THINKING_TEXT_POLL_INTERVAL_SECS = 2.0
+THINKING_TEXT_STABLE_POLLS = 5
 THINKING_TEXT_TOOL_MAX_ROUNDS = 2
 THINKING_TEXT_TOOL_RESULT_CHARS = 16000
 THINKING_TEXT_OPEN_MAX_PAGES = 4
@@ -2154,9 +2155,10 @@ class OpenAIBackendAPI:
             raise RuntimeError("conversation_id not found in stream")
         return conversation_id
 
-    def _extract_thinking_text_result(self, conversation: Dict[str, Any], model: str) -> tuple[str, str]:
+    def _extract_thinking_text_result(self, conversation: Dict[str, Any], model: str) -> tuple[str, str, str]:
         text = ""
         actual_model = ""
+        status = ""
         for node in sorted((conversation.get("mapping") or {}).values(), key=lambda item: float(((item or {}).get("message") or {}).get("create_time") or 0.0)):
             message = (node or {}).get("message") or {}
             if str(((message.get("author") or {}).get("role") or "")).strip() != "assistant":
@@ -2169,13 +2171,16 @@ class OpenAIBackendAPI:
             if candidate:
                 text = candidate
                 actual_model = str(metadata.get("resolved_model_slug") or metadata.get("model_slug") or actual_model)
-        return text, actual_model
+                finish_details = metadata.get("finish_details") if isinstance(metadata.get("finish_details"), dict) else {}
+                status = str(finish_details.get("type") or metadata.get("status") or self._find_search_value(message, "status") or status).strip()
+        return text, actual_model, status
 
     def _wait_thinking_text_result(self, conversation_id: str, model: str) -> tuple[str, str]:
         deadline = time.time() + THINKING_TEXT_TIMEOUT_SECS
         last_text = ""
         last_model = ""
         last_error = ""
+        stable_hits = 0
         while time.time() < deadline:
             try:
                 conversation = self._get_search_conversation(conversation_id)
@@ -2183,10 +2188,14 @@ class OpenAIBackendAPI:
                 last_error = str(exc)
                 time.sleep(THINKING_TEXT_POLL_INTERVAL_SECS)
                 continue
-            text, actual_model = self._extract_thinking_text_result(conversation, model)
-            last_text = text or last_text
-            last_model = actual_model or last_model
+            text, actual_model, status = self._extract_thinking_text_result(conversation, model)
             if text:
+                stable_hits = stable_hits + 1 if text == last_text else 0
+                last_text = text
+            last_model = actual_model or last_model
+            if text and status in SEARCH_DONE_STATUS:
+                return text, actual_model
+            if text and stable_hits >= THINKING_TEXT_STABLE_POLLS:
                 return text, actual_model
             time.sleep(THINKING_TEXT_POLL_INTERVAL_SECS)
         if last_text:
