@@ -73,7 +73,8 @@ EDITABLE_FILE_POLL_INTERVAL_SECS = 5.0
 THINKING_TEXT_MODELS = {"gpt-5-5-thinking"}
 THINKING_TEXT_TIMEOUT_SECS = 180.0
 THINKING_TEXT_POLL_INTERVAL_SECS = 2.0
-THINKING_TEXT_STABLE_POLLS = 5
+THINKING_TEXT_STABLE_POLLS = 12
+THINKING_TEXT_MIN_STABLE_SECS = 30.0
 THINKING_TEXT_TOOL_MAX_ROUNDS = 2
 THINKING_TEXT_TOOL_RESULT_CHARS = 16000
 THINKING_TEXT_OPEN_MAX_PAGES = 4
@@ -2185,6 +2186,7 @@ class OpenAIBackendAPI:
         last_model = ""
         last_error = ""
         stable_hits = 0
+        last_text_changed_at = 0.0
         while time.time() < deadline:
             try:
                 conversation = self._get_search_conversation(conversation_id)
@@ -2194,12 +2196,20 @@ class OpenAIBackendAPI:
                 continue
             text, actual_model, status = self._extract_thinking_text_result(conversation, model)
             if text:
-                stable_hits = stable_hits + 1 if text == last_text else 0
-                last_text = text
+                if text == last_text:
+                    stable_hits += 1
+                else:
+                    stable_hits = 0
+                    last_text = text
+                    last_text_changed_at = time.time()
             last_model = actual_model or last_model
             if text and status in SEARCH_DONE_STATUS:
                 return text, actual_model
-            if text and stable_hits >= THINKING_TEXT_STABLE_POLLS:
+            if (
+                text
+                and stable_hits >= THINKING_TEXT_STABLE_POLLS
+                and time.time() - last_text_changed_at >= THINKING_TEXT_MIN_STABLE_SECS
+            ):
                 return text, actual_model
             time.sleep(THINKING_TEXT_POLL_INTERVAL_SECS)
         if last_text:

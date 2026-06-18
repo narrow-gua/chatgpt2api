@@ -317,6 +317,7 @@ class ChatCompletionCacheTests(unittest.TestCase):
                             "metadata": {
                                 "model_slug": "gpt-5-5-thinking",
                                 "resolved_model_slug": "gpt-5-5-thinking",
+                                "finish_details": {"type": "finished_successfully"},
                             },
                             "content": {"parts": ["ok"]},
                         }
@@ -331,6 +332,40 @@ class ChatCompletionCacheTests(unittest.TestCase):
         self.assertEqual(text, "ok")
         self.assertEqual(model, "gpt-5-5-thinking")
         self.assertGreaterEqual(calls, 2)
+
+    def test_wait_thinking_text_result_does_not_return_short_stable_text_too_early(self) -> None:
+        backend = OpenAIBackendAPI("token")
+        calls = 0
+
+        def fake_get_conversation(_conversation_id):
+            nonlocal calls
+            calls += 1
+            text = "partial answer" if calls < 5 else "partial answer with more detail"
+            status = {} if calls < 6 else {"finish_details": {"type": "finished_successfully"}}
+            return {
+                "mapping": {
+                    "assistant": {
+                        "message": {
+                            "create_time": 2,
+                            "author": {"role": "assistant"},
+                            "metadata": {
+                                "model_slug": "gpt-5-5-thinking",
+                                "resolved_model_slug": "gpt-5-5-thinking",
+                                **status,
+                            },
+                            "content": {"parts": [text]},
+                        }
+                    }
+                }
+            }
+
+        backend._get_search_conversation = fake_get_conversation
+        with mock.patch("services.openai_backend_api.time.sleep", return_value=None):
+            text, model = backend._wait_thinking_text_result("conv-1", "gpt-5-5-thinking")
+
+        self.assertEqual(text, "partial answer with more detail")
+        self.assertEqual(model, "gpt-5-5-thinking")
+        self.assertEqual(calls, 6)
 
     def test_wait_thinking_text_result_waits_for_stable_or_finished_text(self) -> None:
         backend = OpenAIBackendAPI("token")
