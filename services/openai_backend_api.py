@@ -78,6 +78,10 @@ THINKING_TEXT_TOOL_MAX_ROUNDS = 2
 THINKING_TEXT_TOOL_RESULT_CHARS = 16000
 THINKING_TEXT_OPEN_MAX_PAGES = 4
 THINKING_TEXT_OPEN_PAGE_CHARS = 5000
+THINKING_TEXT_STREAM_STATUSES = (
+    "正在提交 thinking 任务...\n\n",
+    "正在等待模型推理...\n\n",
+)
 EDITABLE_FILE_CLIENT_VERSION = "prod-bede35f9dcd856d080e012478f0c1031faa2588e"
 EDITABLE_FILE_CLIENT_BUILD_NUMBER = "6631702"
 EDITABLE_FILE_PSD_OUTPUT_DIR = "data/files/psd"
@@ -2445,6 +2449,7 @@ class OpenAIBackendAPI:
             messages: list[Dict[str, Any]],
             model: str,
             thinking_effort: str,
+            progress: bool = False,
     ) -> Iterator[str]:
         prompt = self._plain_prompt_from_messages(messages)
         if not prompt:
@@ -2455,6 +2460,9 @@ class OpenAIBackendAPI:
         actual_model = ""
         conversation_id = ""
         text = ""
+        if progress:
+            for status_text in THINKING_TEXT_STREAM_STATUSES:
+                yield json.dumps({"p": "/message/content/parts/0", "o": "append", "v": status_text}, ensure_ascii=False)
         for round_index in range(THINKING_TEXT_TOOL_MAX_ROUNDS + 1):
             conduit_token = self._prepare_thinking_text_conversation(prompt, model, effort)
             self._bootstrap()
@@ -2465,7 +2473,13 @@ class OpenAIBackendAPI:
                 break
             if round_index >= THINKING_TEXT_TOOL_MAX_ROUNDS:
                 raise RuntimeError("thinking model requested browser tools but did not produce a final answer")
+            if progress:
+                status_text = "正在搜索资料...\n\n"
+                yield json.dumps({"p": "/message/content/parts/0", "o": "append", "v": status_text, "conversation_id": conversation_id}, ensure_ascii=False)
             tool_result = self._execute_thinking_browser_tools(tool_call, original_prompt, ref_urls)
+            if progress:
+                status_text = "正在整理答案...\n\n"
+                yield json.dumps({"p": "/message/content/parts/0", "o": "append", "v": status_text, "conversation_id": conversation_id}, ensure_ascii=False)
             prompt = self._thinking_browser_followup_prompt(original_prompt, tool_result)
         metadata = {"model_slug": actual_model or model} if actual_model else {"model_slug": model}
         yield json.dumps({"type": "server_ste_metadata", "metadata": metadata, "conversation_id": conversation_id}, ensure_ascii=False)
@@ -3124,6 +3138,7 @@ class OpenAIBackendAPI:
             thinking_effort: str = "",
             images: Optional[list[str]] = None,
             system_hints: Optional[list[str]] = None,
+            progress: bool = False,
     ) -> Iterator[str]:
         system_hints = system_hints or []
         if "picture_v2" in system_hints:
@@ -3132,7 +3147,7 @@ class OpenAIBackendAPI:
 
         normalized = messages or [{"role": "user", "content": prompt}]
         if model in THINKING_TEXT_MODELS and self._normalize_thinking_effort(thinking_effort):
-            yield from self._stream_thinking_text_conversation(normalized, model, thinking_effort)
+            yield from self._stream_thinking_text_conversation(normalized, model, thinking_effort, progress=progress)
             return
 
         self._bootstrap()

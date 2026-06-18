@@ -113,7 +113,7 @@ def stream_text_chat_completion(backend, messages: list[dict[str, Any]], model: 
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
     sent_role = False
-    request = ConversationRequest(model=model, messages=messages, thinking_effort=thinking_effort)
+    request = ConversationRequest(model=model, messages=messages, thinking_effort=thinking_effort, stream_progress=True)
     for delta_text in stream_text_deltas(backend, request):
         if not sent_role:
             sent_role = True

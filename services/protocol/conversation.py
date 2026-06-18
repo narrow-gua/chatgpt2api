@@ -305,6 +305,7 @@ class ConversationRequest:
     response_format: str = "b64_json"
     base_url: str | None = None
     message_as_error: bool = False
+    stream_progress: bool = False
     progress_callback: Any = None  # Callable[[str], None] | None
 
 
@@ -665,6 +666,7 @@ def conversation_events(
     images: list[str] | None = None,
     size: str | None = None,
     quality: str = "auto",
+    progress: bool = False,
 ) -> Iterator[dict[str, Any]]:
     normalized = normalize_messages(messages or ([{"role": "user", "content": prompt}] if prompt else []))
     image_model = is_supported_image_model(model)
@@ -678,6 +680,7 @@ def conversation_events(
         thinking_effort=thinking_effort if not image_model else "",
         images=images if image_model else None,
         system_hints=["picture_v2"] if image_model else None,
+        progress=progress,
     )
     yield from iter_conversation_payloads(payloads, history_text, history_messages)
 
@@ -704,6 +707,7 @@ def stream_text_deltas(backend: OpenAIBackendAPI, request: ConversationRequest) 
                     model=request.model,
                     prompt=request.prompt,
                     thinking_effort=request.thinking_effort,
+                    progress=request.stream_progress,
             ):
                 actual = str(event.get("actual_model_slug") or "").strip()
                 if actual:
