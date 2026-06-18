@@ -2218,6 +2218,47 @@ class OpenAIBackendAPI:
             raise RuntimeError(f"timed out waiting for thinking text result: {conversation_id}; last_error={last_error}")
         raise RuntimeError(f"timed out waiting for thinking text result: {conversation_id}")
 
+    def _iter_thinking_text_result(self, conversation_id: str, model: str) -> Iterator[tuple[str, str, str, bool]]:
+        deadline = time.time() + THINKING_TEXT_TIMEOUT_SECS
+        last_text = ""
+        last_model = ""
+        last_error = ""
+        stable_hits = 0
+        last_text_changed_at = 0.0
+        while time.time() < deadline:
+            try:
+                conversation = self._get_search_conversation(conversation_id)
+            except Exception as exc:
+                last_error = str(exc)
+                time.sleep(THINKING_TEXT_POLL_INTERVAL_SECS)
+                continue
+            text, actual_model, status = self._extract_thinking_text_result(conversation, model)
+            if actual_model:
+                last_model = actual_model
+            if text:
+                if text == last_text:
+                    stable_hits += 1
+                else:
+                    delta = text[len(last_text):] if text.startswith(last_text) else text
+                    stable_hits = 0
+                    last_text = text
+                    last_text_changed_at = time.time()
+                    if delta:
+                        yield delta, text, actual_model or last_model, False
+            done = bool(text and status in SEARCH_DONE_STATUS)
+            if not done and text and stable_hits >= THINKING_TEXT_STABLE_POLLS and time.time() - last_text_changed_at >= THINKING_TEXT_MIN_STABLE_SECS:
+                done = True
+            if done:
+                yield "", text, actual_model or last_model, True
+                return
+            time.sleep(THINKING_TEXT_POLL_INTERVAL_SECS)
+        if last_text:
+            yield "", last_text, last_model, True
+            return
+        if last_error:
+            raise RuntimeError(f"timed out waiting for thinking text result: {conversation_id}; last_error={last_error}")
+        raise RuntimeError(f"timed out waiting for thinking text result: {conversation_id}")
+
     @staticmethod
     def _parse_thinking_browser_tool_call(text: str) -> Dict[str, Any]:
         text = str(text or "").strip()
@@ -2477,9 +2518,24 @@ class OpenAIBackendAPI:
             conduit_token = self._prepare_thinking_text_conversation(prompt, model, effort)
             self._bootstrap()
             conversation_id = self._run_thinking_text_conversation(prompt, conduit_token, model, effort)
-            text, actual_model = self._wait_thinking_text_result(conversation_id, model)
+            buffered_tool_candidate = False
+            buffered_text = ""
+            for delta, current_text, current_model, done in self._iter_thinking_text_result(conversation_id, model):
+                text = current_text or text
+                actual_model = current_model or actual_model
+                if progress and (buffered_tool_candidate or str(current_text or "").lstrip().startswith(("{", "```"))):
+                    buffered_tool_candidate = True
+                    buffered_text = current_text
+                elif progress and delta:
+                    yield json.dumps({"p": "/message/content/parts/0", "o": "append", "v": delta, "conversation_id": conversation_id}, ensure_ascii=False)
+                if done:
+                    break
+            if buffered_tool_candidate:
+                text = buffered_text
             tool_call = self._parse_thinking_browser_tool_call(text)
             if not tool_call:
+                if progress and buffered_tool_candidate and text:
+                    yield json.dumps({"p": "/message/content/parts/0", "o": "append", "v": text, "conversation_id": conversation_id}, ensure_ascii=False)
                 break
             if round_index >= THINKING_TEXT_TOOL_MAX_ROUNDS:
                 raise RuntimeError("thinking model requested browser tools but did not produce a final answer")
@@ -2493,7 +2549,10 @@ class OpenAIBackendAPI:
             prompt = self._thinking_browser_followup_prompt(original_prompt, tool_result)
         metadata = {"model_slug": actual_model or model} if actual_model else {"model_slug": model}
         yield json.dumps({"type": "server_ste_metadata", "metadata": metadata, "conversation_id": conversation_id}, ensure_ascii=False)
-        yield json.dumps({"p": "/message/content/parts/0", "o": "append", "v": text, "conversation_id": conversation_id}, ensure_ascii=False)
+        if progress:
+            yield json.dumps({"p": "/message/content/parts/0", "o": "append", "v": "", "conversation_id": conversation_id}, ensure_ascii=False)
+        else:
+            yield json.dumps({"p": "/message/content/parts/0", "o": "append", "v": text, "conversation_id": conversation_id}, ensure_ascii=False)
         yield "[DONE]"
 
     def _wait_search_result(self, conversation_id: str, timeout_secs: float, poll_interval_secs: float) -> Dict[str, Any]:

@@ -265,9 +265,9 @@ class ChatCompletionCacheTests(unittest.TestCase):
         backend._prepare_thinking_text_conversation = mock.Mock(side_effect=["token-1", "token-2"])
         backend._bootstrap = mock.Mock()
         backend._run_thinking_text_conversation = mock.Mock(side_effect=["conv-1", "conv-2"])
-        backend._wait_thinking_text_result = mock.Mock(side_effect=[
-            ('{"open":[{"ref_id":"turn0search0"}],"response_length":"long"} .', "gpt-5-5-thinking"),
-            ("妙搭是飞书的低代码平台。", "gpt-5-5-thinking"),
+        backend._iter_thinking_text_result = mock.Mock(side_effect=[
+            iter([('{"open":[{"ref_id":"turn0search0"}],"response_length":"long"} .', '{"open":[{"ref_id":"turn0search0"}],"response_length":"long"} .', "gpt-5-5-thinking", True)]),
+            iter([("妙搭是飞书的低代码平台。", "妙搭是飞书的低代码平台。", "gpt-5-5-thinking", True)]),
         ])
         backend._execute_thinking_browser_tools = mock.Mock(return_value="Opened pages:\n飞书妙搭资料")
 
@@ -286,7 +286,10 @@ class ChatCompletionCacheTests(unittest.TestCase):
         backend._prepare_thinking_text_conversation = mock.Mock(return_value="token-1")
         backend._bootstrap = mock.Mock()
         backend._run_thinking_text_conversation = mock.Mock(return_value="conv-1")
-        backend._wait_thinking_text_result = mock.Mock(return_value=("最终答案", "gpt-5-5-thinking"))
+        backend._iter_thinking_text_result = mock.Mock(return_value=iter([
+            ("最终", "最终", "gpt-5-5-thinking", False),
+            ("答案", "最终答案", "gpt-5-5-thinking", True),
+        ]))
 
         events = list(iter_conversation_payloads(backend._stream_thinking_text_conversation(
             [{"role": "user", "content": "hi"}],
@@ -298,6 +301,32 @@ class ChatCompletionCacheTests(unittest.TestCase):
 
         self.assertIn("正在提交 thinking 任务", "".join(deltas))
         self.assertTrue("".join(deltas).endswith("最终答案"))
+
+    def test_thinking_text_route_buffers_browser_tool_json_during_progress(self) -> None:
+        backend = OpenAIBackendAPI("token")
+        backend._prepare_thinking_text_conversation = mock.Mock(side_effect=["token-1", "token-2"])
+        backend._bootstrap = mock.Mock()
+        backend._run_thinking_text_conversation = mock.Mock(side_effect=["conv-1", "conv-2"])
+        backend._iter_thinking_text_result = mock.Mock(side_effect=[
+            iter([
+                ('{"open":', '{"open":', "gpt-5-5-thinking", False),
+                ('[{"ref_id":"turn0search0"}]}', '{"open":[{"ref_id":"turn0search0"}]}', "gpt-5-5-thinking", True),
+            ]),
+            iter([("最终答案", "最终答案", "gpt-5-5-thinking", True)]),
+        ])
+        backend._execute_thinking_browser_tools = mock.Mock(return_value="Opened pages:\n资料")
+
+        events = list(iter_conversation_payloads(backend._stream_thinking_text_conversation(
+            [{"role": "user", "content": "hi"}],
+            "gpt-5-5-thinking",
+            "extended",
+            progress=True,
+        )))
+        output = "".join(str(event.get("delta") or "") for event in events if event.get("type") == "conversation.delta")
+
+        self.assertNotIn('{"open"', output)
+        self.assertIn("正在搜索资料", output)
+        self.assertTrue(output.endswith("最终答案"))
 
     def test_wait_thinking_text_result_retries_temporary_detail_errors(self) -> None:
         backend = OpenAIBackendAPI("token")
