@@ -38,6 +38,31 @@ class ImageBaseUrlApiTests(unittest.TestCase):
 
         self.assertEqual(api_support.resolve_image_base_url(request), "https://public.example.com")
 
+    def test_uses_forwarded_https_scheme_and_drops_default_port(self) -> None:
+        self.fake_config.base_url = ""
+        request = SimpleNamespace(
+            url=SimpleNamespace(scheme="http", netloc="45.147.167.43:443"),
+            headers={
+                "host": "45.147.167.43:443",
+                "x-forwarded-proto": "https",
+            },
+        )
+
+        self.assertEqual(api_support.resolve_image_base_url(request), "https://45.147.167.43")
+
+    def test_keeps_non_default_forwarded_port(self) -> None:
+        self.fake_config.base_url = ""
+        request = SimpleNamespace(
+            url=SimpleNamespace(scheme="http", netloc="internal:8080"),
+            headers={
+                "host": "154.219.109.47",
+                "x-forwarded-proto": "https",
+                "x-forwarded-port": "8081",
+            },
+        )
+
+        self.assertEqual(api_support.resolve_image_base_url(request), "https://154.219.109.47:8081")
+
 
 if __name__ == "__main__":
     unittest.main()

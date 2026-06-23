@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from threading import Event, Thread
+from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request
 
@@ -46,8 +47,44 @@ def require_admin(authorization: str | None) -> dict[str, object]:
     return identity
 
 
+def _first_header_value(value: str | None) -> str:
+    return str(value or "").split(",", 1)[0].strip()
+
+
+def _host_has_port(host: str) -> bool:
+    try:
+        return urlsplit(f"//{host}").port is not None
+    except ValueError:
+        return False
+
+
+def _normalize_forwarded_host(host: str, scheme: str, forwarded_port: str = "") -> str:
+    host = host.strip()
+    scheme = scheme.lower().strip()
+    forwarded_port = forwarded_port.strip()
+    default_port = {"http": "80", "https": "443"}.get(scheme)
+
+    if forwarded_port and forwarded_port != default_port and not _host_has_port(host):
+        host = f"{host}:{forwarded_port}"
+
+    if default_port and host.endswith(f":{default_port}"):
+        return host[: -(len(default_port) + 1)]
+    return host
+
+
 def resolve_image_base_url(request: Request) -> str:
-    return config.base_url or f"{request.url.scheme}://{request.headers.get('host', request.url.netloc)}"
+    if config.base_url:
+        return config.base_url
+
+    headers = request.headers
+    scheme = _first_header_value(headers.get("x-forwarded-proto")) or request.url.scheme
+    host = (
+        _first_header_value(headers.get("x-forwarded-host"))
+        or _first_header_value(headers.get("host"))
+        or request.url.netloc
+    )
+    port = _first_header_value(headers.get("x-forwarded-port"))
+    return f"{scheme}://{_normalize_forwarded_host(host, scheme, port)}"
 
 
 def raise_image_quota_error(exc: Exception) -> None:
